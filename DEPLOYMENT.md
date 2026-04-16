@@ -1,161 +1,121 @@
-# Pixel Duel — Online Deployment Guide
+# Pixel Duel — Deployment Guide
 
-## How It Works
+## Architecture
 
-The game runs as a single Node.js process.  
-Express serves the frontend files; Socket.io handles real-time communication.  
-No database — all state lives in memory (rooms reset if the server restarts).
+GitHub Pages only serves **static files** — it can't run Node.js.  
+So the app is split into two parts:
+
+| Part | What it is | Where it runs |
+|---|---|---|
+| **Frontend** | `docs/` folder (HTML, CSS, JS) | GitHub Pages (free, always on) |
+| **Backend** | `server.js` (Socket.io game server) | Railway / Render / Fly.io |
 
 ---
 
-## 1. Local Development
+## Step 1 — Deploy the Backend
+
+Pick one of the options below. You'll get a URL like  
+`https://pixel-duel-production.up.railway.app` — you need it for Step 2.
+
+### Option A: Railway (recommended)
 
 ```bash
-# Clone / enter the project folder
-cd Game
+npm install -g @railway/cli
+railway login
+railway init      # run from inside the Game/ folder
+railway up
+```
 
-# Install dependencies
+Railway auto-detects Node.js, injects `PORT`, and supports WebSockets out of the box.  
+Free Hobby plan = 500 hours/month.
+
+### Option B: Render
+
+1. Push this repo to GitHub.
+2. **render.com → New → Web Service** → connect repo.
+3. Set:
+   - Build command: `npm install`
+   - Start command: `node server.js`
+4. Deploy.
+
+> Render free tier sleeps after 15 min of inactivity (~30 s cold start on first visit).
+
+### Option C: Fly.io
+
+```bash
+# Install flyctl, then:
+fly auth login
+fly launch     # say NO to Postgres
+fly deploy
+```
+
+---
+
+## Step 2 — Point the Frontend at Your Backend
+
+Open `docs/config.js` and paste your backend URL:
+
+```js
+// docs/config.js
+window.BACKEND_URL = 'https://pixel-duel-production.up.railway.app';
+//                    ↑ replace with your actual backend URL
+```
+
+Commit and push:
+
+```bash
+git add docs/config.js
+git commit -m "Set backend URL"
+git push
+```
+
+---
+
+## Step 3 — Enable GitHub Pages
+
+1. Go to your repo on GitHub → **Settings → Pages**.
+2. Under **Branch**, select `main` (or whichever branch) and folder **`/docs`**.
+3. Click **Save**.
+
+GitHub will give you a URL like:
+
+```
+https://yourusername.github.io/Game/
+```
+
+That's it — share this URL with your friend!
+
+---
+
+## Playing Online
+
+1. You open `https://yourusername.github.io/Game/` → **Create Game** → share the 4-letter code.
+2. Friend opens the **same URL** → **Join Game** → types the code.
+3. You click **Start Game** once both names appear in the lobby.
+
+---
+
+## Local Development
+
+No GitHub Pages or backend deploy needed — just run locally:
+
+```bash
 npm install
-
-# Start the server
 npm start
 # → http://localhost:3000
 ```
 
-Open **two browser tabs** on `http://localhost:3000` to test both players.
+Leave `BACKEND_URL = ''` in `config.js` when developing locally.  
+The frontend and backend are on the same origin, so Socket.io connects automatically.
 
 ---
 
-## 2. Deploy to Railway (Recommended — easiest free tier)
+## Troubleshooting
 
-Railway auto-detects Node.js and injects `PORT`.
-
-### Steps
-
-```bash
-# 1. Install the Railway CLI
-npm install -g @railway/cli
-
-# 2. Log in
-railway login
-
-# 3. Inside the Game/ folder, initialise a new project
-railway init
-
-# 4. Deploy
-railway up
-```
-
-Railway will give you a public URL like `https://pixel-duel-production.up.railway.app`.
-
-### Notes
-- No `Procfile` or extra config needed — `npm start` is detected automatically.
-- The free "Hobby" plan includes 500 execution hours/month (plenty for casual play).
-- WebSocket connections work out of the box.
-
----
-
-## 3. Deploy to Render (Free tier with caveats)
-
-### Steps
-
-1. Push your code to a GitHub repository.
-2. Go to [render.com](https://render.com) → **New → Web Service**.
-3. Connect your GitHub repo.
-4. Set:
-   | Field | Value |
-   |---|---|
-   | **Build Command** | `npm install` |
-   | **Start Command** | `node server.js` |
-   | **Environment** | `Node` |
-5. Click **Create Web Service**.
-
-Render injects `PORT` automatically.
-
-### Caveats
-- Free-tier services **spin down after 15 minutes of inactivity**.  
-  The first player to visit after a spin-down will wait ~30 seconds for a cold start.
-- WebSocket connections are supported.
-
----
-
-## 4. Deploy to Fly.io (Most control, generous free tier)
-
-### Steps
-
-```bash
-# 1. Install Fly CLI
-# macOS / Linux:
-curl -L https://fly.io/install.sh | sh
-
-# Windows: https://fly.io/docs/hands-on/install-flyctl/
-
-# 2. Authenticate
-fly auth login
-
-# 3. Inside the Game/ folder, launch (auto-detects Node.js)
-fly launch
-# Accept defaults; it creates fly.toml automatically
-# When asked for a Postgres database, say NO
-
-# 4. Deploy
-fly deploy
-```
-
-### Notes
-- `fly launch` generates a `fly.toml`; you don't need to edit it for this project.
-- The app listens on `0.0.0.0` (already configured in `server.js`).
-- Free tier: 3 shared-CPU VMs, always on.
-
----
-
-## 5. Environment Variables
-
-Only one variable is needed and **all platforms inject it automatically**:
-
-| Variable | Description | Default |
-|---|---|---|
-| `PORT` | Port the server listens on | `3000` |
-
-You never need to set this manually.
-
----
-
-## 6. Sharing the Game With Your Friend
-
-Once deployed, your friend just needs the URL:
-
-```
-https://your-app-name.up.railway.app
-```
-
-1. You open the URL → **Create Game** → share the 4-letter code.
-2. Friend opens the **same URL** → **Join Game** → types your code.
-3. You click **Start Game** when both are in the lobby.
-
-No account, no download, no plugins — just a browser.
-
----
-
-## 7. WebSocket & Proxy Notes
-
-All three platforms (Railway, Render, Fly.io) support WebSocket upgrades natively —
-no extra configuration required.
-
-If you run behind a custom Nginx reverse proxy, add:
-
-```nginx
-proxy_http_version 1.1;
-proxy_set_header Upgrade $http_upgrade;
-proxy_set_header Connection "upgrade";
-```
-
----
-
-## 8. Keeping Rooms Alive
-
-Rooms are stored in memory. If the server process restarts (e.g. a new deploy), 
-all active rooms are lost and players will need to create a new room.
-
-For persistent rooms across restarts you would need a Redis adapter for Socket.io —
-this is outside the scope of this guide but straightforward to add later.
+| Problem | Fix |
+|---|---|
+| "Connection lost" immediately | Check `BACKEND_URL` in `config.js` is correct and backend is running |
+| CORS error in browser console | Make sure you copied the full URL including `https://` |
+| Backend URL has a trailing slash | Remove it: `'https://…app'` not `'https://…app/'` |
+| Render cold start — game hangs | Wait 30 s on first visit, then reload |
+| GitHub Pages shows old version | Hard-refresh (`Ctrl+Shift+R`) or wait a minute for CDN to update |

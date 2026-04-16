@@ -68,7 +68,9 @@ function clearError() {
 
 function connectSocket() {
   if (socket) return;
-  socket = io();
+  // window.BACKEND_URL is set in config.js
+  // Empty string / falsy = same-origin (local dev with `npm start`)
+  socket = window.BACKEND_URL ? io(window.BACKEND_URL) : io();
   setupSocketHandlers();
 }
 

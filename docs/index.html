@@ -103,7 +103,22 @@
     </div>
   </div>
 
-  <script src="/socket.io/socket.io.js"></script>
+  <!-- config.js must load first — set BACKEND_URL here after deploying the server -->
+  <script src="config.js"></script>
+  <!--
+    Socket.io client:
+    - In local dev (npm start): served automatically by Express at /socket.io/socket.io.js
+    - On GitHub Pages: loaded from the deployed backend URL set in config.js
+  -->
+  <script>
+    // Dynamically load the socket.io client from wherever the backend lives
+    (function () {
+      var base = window.BACKEND_URL || '';
+      var s = document.createElement('script');
+      s.src = base + '/socket.io/socket.io.js';
+      document.write(s.outerHTML);
+    })();
+  </script>
   <script src="lobby.js"></script>
   <script src="game.js"></script>
 </body>

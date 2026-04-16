@@ -5,9 +5,18 @@ const path    = require('path');
 
 const app    = express();
 const server = http.createServer(app);
-const io     = new Server(server);
 
-app.use(express.static(path.join(__dirname, 'public')));
+// CORS: allow GitHub Pages (or any origin) to connect via Socket.io
+// When deployed to Railway/Render the frontend lives on a different origin.
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
+
+// Serve the frontend files from docs/ (also used by GitHub Pages)
+app.use(express.static(path.join(__dirname, 'docs')));
 
 // ─────────────────────────────────────────────────────────────
 // CONSTANTS
