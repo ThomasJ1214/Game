@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pixel Duel</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════
+       SCREEN 1 — MAIN MENU
+  ═══════════════════════════════════════════ -->
+  <div id="screen-menu" class="screen active">
+    <h1 class="logo">PIXEL DUEL</h1>
+    <p class="tagline">2-player · space arena · real-time</p>
+
+    <div class="card">
+      <label for="inp-name">Your callsign</label>
+      <input id="inp-name" type="text" maxlength="20"
+             placeholder="Enter your name" autocomplete="off" spellcheck="false">
+
+      <div class="row gap mt">
+        <button id="btn-create" class="btn-neon">Create Game</button>
+        <button id="btn-show-join" class="btn-ghost">Join Game</button>
+      </div>
+
+      <div id="join-form" class="col mt hidden">
+        <label for="inp-code">Room code</label>
+        <input id="inp-code" type="text" maxlength="4"
+               placeholder="4-letter code" autocomplete="off" spellcheck="false">
+        <button id="btn-join" class="btn-neon mt-sm">Join</button>
+      </div>
+
+      <p id="menu-error" class="error hidden"></p>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════
+       SCREEN 2 — LOBBY
+  ═══════════════════════════════════════════ -->
+  <div id="screen-lobby" class="screen">
+    <h2 id="lobby-heading" class="heading">Game Room</h2>
+
+    <div id="code-block" class="code-block hidden">
+      <p class="hint">Share this code with your friend:</p>
+      <div id="room-code" class="room-code" title="Click to copy">----</div>
+      <p class="hint small">Click to copy &nbsp;·&nbsp; or share the URL below</p>
+    </div>
+
+    <div id="player-list" class="player-list"></div>
+
+    <p id="lobby-status" class="muted">Waiting for opponent to join…</p>
+
+    <div class="row gap mt">
+      <button id="btn-start" class="btn-neon" disabled>Start Game</button>
+      <button id="btn-lobby-back" class="btn-ghost">Leave</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════
+       SCREEN 3 — GAME
+  ═══════════════════════════════════════════ -->
+  <div id="screen-game" class="screen">
+    <div class="canvas-wrap">
+      <canvas id="canvas" width="800" height="600"></canvas>
+
+      <!-- Controls help overlay -->
+      <div id="help-overlay" class="overlay-panel">
+        <h3>CONTROLS</h3>
+        <table class="ctrl-table">
+          <tr><td class="key">W</td><td>Thrust forward</td></tr>
+          <tr><td class="key">A / D</td><td>Rotate left / right</td></tr>
+          <tr><td class="key">S</td><td>Emergency brake</td></tr>
+          <tr><td class="key">SPACE</td><td>Fire</td></tr>
+          <tr><td class="key">?</td><td>Toggle this menu</td></tr>
+        </table>
+        <p class="goal">First to win <b>3 rounds</b> wins the match!</p>
+        <p class="hint small">Fading in 3 s &nbsp;·&nbsp; press <kbd>?</kbd> to re-open</p>
+      </div>
+
+      <!-- Opponent disconnected overlay -->
+      <div id="disc-overlay" class="overlay-panel disc hidden">
+        <p id="disc-msg" class="disc-msg">Your opponent disconnected.</p>
+        <button id="btn-disc-back" class="btn-neon mt">Back to Menu</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════
+       SCREEN 4 — GAME OVER
+  ═══════════════════════════════════════════ -->
+  <div id="screen-gameover" class="screen">
+    <div class="card gameover-card">
+      <p class="round-label">MATCH OVER</p>
+      <h2 id="go-winner" class="winner-name">--- wins!</h2>
+      <div id="go-scores" class="score-row"></div>
+      <div class="row gap mt">
+        <button id="btn-rematch" class="btn-neon">Play Again</button>
+        <button id="btn-go-back" class="btn-ghost">Main Menu</button>
+      </div>
+      <p id="rematch-wait" class="muted hidden">Waiting for opponent…</p>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="lobby.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
