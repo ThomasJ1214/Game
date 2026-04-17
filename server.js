@@ -117,12 +117,16 @@ function stepShip(ship, inp) {
   if (inp.a) ship.angle -= SHIP_ROTATE;
   if (inp.d) ship.angle += SHIP_ROTATE;
 
-  ship.thrustOn = !!inp.w;
+  ship.thrustOn        = !!inp.w;
+  ship.reverseThrustOn = !!inp.s;
   if (inp.w) {
     ship.vx += Math.cos(ship.angle) * SHIP_THRUST;
     ship.vy += Math.sin(ship.angle) * SHIP_THRUST;
   }
-  if (inp.s) { ship.vx *= 0.88; ship.vy *= 0.88; }   // brake
+  if (inp.s) {
+    ship.vx -= Math.cos(ship.angle) * SHIP_THRUST;
+    ship.vy -= Math.sin(ship.angle) * SHIP_THRUST;
+  }
 
   const spd = Math.hypot(ship.vx, ship.vy);
   if (spd > SHIP_MAX_SPD) {

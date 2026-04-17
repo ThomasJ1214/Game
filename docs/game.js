@@ -268,7 +268,7 @@ function drawShip(ship, now) {
   ctx.translate(ship.x, ship.y);
   ctx.rotate(ship.angle);
 
-  // Thrust flame
+  // Forward thrust flame (rear)
   if (ship.thrustOn) {
     const flicker = 8 + Math.random() * 10;
     const grad    = ctx.createLinearGradient(-SHIP_RADIUS, 0, -SHIP_RADIUS - flicker, 0);
@@ -279,6 +279,20 @@ function drawShip(ship, now) {
     ctx.moveTo(-12, -6);
     ctx.lineTo(-SHIP_RADIUS - flicker, 0);
     ctx.lineTo(-12,  6);
+    ctx.fill();
+  }
+
+  // Reverse thrust flame (nose)
+  if (ship.reverseThrustOn) {
+    const flicker = 6 + Math.random() * 8;
+    const grad    = ctx.createLinearGradient(18, 0, 18 + flicker, 0);
+    grad.addColorStop(0, `rgba(80,160,255,0.85)`);
+    grad.addColorStop(1, 'rgba(0,80,255,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(14, -4);
+    ctx.lineTo(18 + flicker, 0);
+    ctx.lineTo(14,  4);
     ctx.fill();
   }
 
