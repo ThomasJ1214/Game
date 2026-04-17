@@ -114,6 +114,16 @@ btnShowJoin.addEventListener('click', () => setMode('join'));
 // ─────────────────────────────────────────────────────────────
 
 function connectSocket(onReady) {
+  // On GitHub Pages (not localhost) BACKEND_URL must be set
+  const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname);
+  if (!isLocal && !window.BACKEND_URL) {
+    clearTimeout(responseTimer);
+    setLoading(btnDoCreate, false, 'Create →');
+    setLoading(btnJoin,     false, 'Join →');
+    showError('Paste your Railway URL into docs/config.js then redeploy. See DEPLOYMENT.md.');
+    return;
+  }
+
   // Already connected — go straight to the action
   if (socket && socket.connected) { onReady(); return; }
 
