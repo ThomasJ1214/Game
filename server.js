@@ -37,6 +37,8 @@ const MAX_BULLETS   = 3;      // per player
 const WINS_NEEDED   = 3;      // rounds to win the match
 const RESPAWN_MS    = 1800;   // ms between round-end and next round
 const INVINCIBLE_MS = 2000;   // ms of spawn invincibility
+const BOOST_MULT    = 2.4;    // velocity delta multiplier on boost
+const BOOST_CD      = 3500;   // ms between boosts
 
 // ─────────────────────────────────────────────────────────────
 // IN-MEMORY STATE
@@ -85,7 +87,11 @@ function makeShip(index, name) {
     health:          3,
     alive:           true,
     thrustOn:        false,
+    reverseThrustOn: false,
+    boosting:        false,
     lastShot:        0,
+    lastBoost:       0,
+    boostUntil:      0,
     invincible:      true,
     invincibleUntil: Date.now() + INVINCIBLE_MS
   };
@@ -113,9 +119,18 @@ function respawnShips(state) {
 // PHYSICS
 // ─────────────────────────────────────────────────────────────
 
-function stepShip(ship, inp) {
+function stepShip(ship, inp, now) {
   if (inp.a) ship.angle -= SHIP_ROTATE;
   if (inp.d) ship.angle += SHIP_ROTATE;
+
+  // Boost (Shift) — short burst, 3.5 s cooldown
+  if (inp.shift && now - ship.lastBoost >= BOOST_CD) {
+    ship.lastBoost  = now;
+    ship.boostUntil = now + 220;
+    ship.vx += Math.cos(ship.angle) * SHIP_THRUST * BOOST_MULT;
+    ship.vy += Math.sin(ship.angle) * SHIP_THRUST * BOOST_MULT;
+  }
+  ship.boosting = now < ship.boostUntil;
 
   ship.thrustOn        = !!inp.w;
   ship.reverseThrustOn = !!inp.s;
@@ -128,10 +143,11 @@ function stepShip(ship, inp) {
     ship.vy -= Math.sin(ship.angle) * SHIP_THRUST;
   }
 
-  const spd = Math.hypot(ship.vx, ship.vy);
-  if (spd > SHIP_MAX_SPD) {
-    ship.vx = (ship.vx / spd) * SHIP_MAX_SPD;
-    ship.vy = (ship.vy / spd) * SHIP_MAX_SPD;
+  const spd    = Math.hypot(ship.vx, ship.vy);
+  const maxSpd = ship.boosting ? SHIP_MAX_SPD * 2.2 : SHIP_MAX_SPD;
+  if (spd > maxSpd) {
+    ship.vx = (ship.vx / spd) * maxSpd;
+    ship.vy = (ship.vy / spd) * maxSpd;
   }
 
   ship.vx *= SHIP_DRAG;
@@ -181,6 +197,25 @@ function resolveCollisions(state) {
     }
   }
   state.bullets = state.bullets.filter(b => !remove.has(b.id));
+}
+
+function resolveShipCollision(state) {
+  const [a, b] = state.ships;
+  if (!a.alive || !b.alive) return;
+  const dx   = b.x - a.x;
+  const dy   = b.y - a.y;
+  const dist = Math.hypot(dx, dy);
+  const minD = SHIP_RADIUS * 2;
+  if (dist >= minD || dist === 0) return;
+  const nx  = dx / dist;
+  const ny  = dy / dist;
+  const dot = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
+  if (dot <= 0) return;   // already separating
+  a.vx -= dot * nx;  a.vy -= dot * ny;
+  b.vx += dot * nx;  b.vy += dot * ny;
+  const push = (minD - dist) / 2 + 0.5;
+  a.x -= nx * push;  a.y -= ny * push;
+  b.x += nx * push;  b.y += ny * push;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -267,11 +302,12 @@ function startLoop(room) {
       for (const ship of state.ships) {
         if (!ship.alive) continue;
         const inp = room.inputs[ship.index];
-        stepShip(ship, inp);
+        stepShip(ship, inp, now);
         if (inp.space) tryFire(ship, state.bullets, state.tick, now);
       }
       stepBullets(state);
       resolveCollisions(state);
+      resolveShipCollision(state);
       checkRound(room);
     }
 
@@ -392,7 +428,8 @@ io.on('connection', socket => {
       a:     !!keys.a,
       s:     !!keys.s,
       d:     !!keys.d,
-      space: !!keys.space
+      space: !!keys.space,
+      shift: !!keys.shift
     };
   });
 

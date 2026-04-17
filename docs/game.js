@@ -8,6 +8,7 @@ const ARENA_W       = 800;
 const ARENA_H       = 600;
 const SHIP_RADIUS   = 16;
 const BULLET_RADIUS = 4;
+const BOOST_CD      = 3500;   // must match server.js
 const COLORS        = ['#00ffff', '#ff00ff'];   // cyan, magenta
 
 // ─────────────────────────────────────────────────────────────
@@ -25,7 +26,7 @@ let stars        = [];
 let explosions   = [];
 let lastInputSend = 0;
 
-const keys = { w: false, a: false, s: false, d: false, space: false };
+const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
 
 // ─────────────────────────────────────────────────────────────
 // PUBLIC API  (called by lobby.js)
@@ -41,7 +42,7 @@ function initGame(sock, initialState, yourIndex) {
   const myGen  = generation;
 
   // Clear any stuck keys from a previous game
-  keys.w = keys.a = keys.s = keys.d = keys.space = false;
+  keys.w = keys.a = keys.s = keys.d = keys.space = keys.shift = false;
 
   canvas = document.getElementById('canvas');
   ctx    = canvas.getContext('2d');
@@ -66,23 +67,26 @@ function initGame(sock, initialState, yourIndex) {
 
   // Keyboard listeners
   window.onkeydown = e => {
-    if (e.code === 'KeyW')    keys.w     = true;
-    if (e.code === 'KeyA')    keys.a     = true;
-    if (e.code === 'KeyS')    keys.s     = true;
-    if (e.code === 'KeyD')    keys.d     = true;
-    if (e.code === 'Space') { keys.space = true; if (generation === myGen) e.preventDefault(); }
+    if (e.code === 'KeyW'     || e.code === 'ArrowUp')    keys.w     = true;
+    if (e.code === 'KeyA'     || e.code === 'ArrowLeft')  keys.a     = true;
+    if (e.code === 'KeyS'     || e.code === 'ArrowDown')  keys.s     = true;
+    if (e.code === 'KeyD'     || e.code === 'ArrowRight') keys.d     = true;
+    if (e.code === 'Space')   { keys.space = true; if (generation === myGen) e.preventDefault(); }
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') keys.shift = true;
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
     if (e.key  === '?')       toggleHelp();
   };
   window.onkeyup = e => {
-    if (e.code === 'KeyW')  keys.w     = false;
-    if (e.code === 'KeyA')  keys.a     = false;
-    if (e.code === 'KeyS')  keys.s     = false;
-    if (e.code === 'KeyD')  keys.d     = false;
-    if (e.code === 'Space') keys.space = false;
+    if (e.code === 'KeyW'     || e.code === 'ArrowUp')    keys.w     = false;
+    if (e.code === 'KeyA'     || e.code === 'ArrowLeft')  keys.a     = false;
+    if (e.code === 'KeyS'     || e.code === 'ArrowDown')  keys.s     = false;
+    if (e.code === 'KeyD'     || e.code === 'ArrowRight') keys.d     = false;
+    if (e.code === 'Space')     keys.space = false;
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') keys.shift = false;
   };
   // Release all keys if window loses focus (prevents stuck movement)
   window.onblur = () => {
-    keys.w = keys.a = keys.s = keys.d = keys.space = false;
+    keys.w = keys.a = keys.s = keys.d = keys.space = keys.shift = false;
   };
 
   // Show help briefly at game start
@@ -105,7 +109,7 @@ function initGame(sock, initialState, yourIndex) {
 
 function stopGame() {
   generation++;
-  keys.w = keys.a = keys.s = keys.d = keys.space = false;
+  keys.w = keys.a = keys.s = keys.d = keys.space = keys.shift = false;
   window.onkeydown = null;
   window.onkeyup   = null;
   window.onblur    = null;
@@ -268,17 +272,20 @@ function drawShip(ship, now) {
   ctx.translate(ship.x, ship.y);
   ctx.rotate(ship.angle);
 
-  // Forward thrust flame (rear)
-  if (ship.thrustOn) {
-    const flicker = 8 + Math.random() * 10;
+  // Forward thrust flame (rear) — larger + white-hot when boosting
+  if (ship.thrustOn || ship.boosting) {
+    const boost   = ship.boosting;
+    const flicker = boost ? (18 + Math.random() * 20) : (8 + Math.random() * 10);
+    const spread  = boost ? 10 : 6;
+    const g       = boost ? (200 + (Math.random() * 55) | 0) : (100 + (Math.random() * 120) | 0);
     const grad    = ctx.createLinearGradient(-SHIP_RADIUS, 0, -SHIP_RADIUS - flicker, 0);
-    grad.addColorStop(0, `rgba(255,${100 + (Math.random() * 120) | 0},0,0.9)`);
-    grad.addColorStop(1, 'rgba(255,60,0,0)');
+    grad.addColorStop(0, boost ? `rgba(255,255,${g},1)` : `rgba(255,${g},0,0.9)`);
+    grad.addColorStop(1, boost ? 'rgba(255,160,0,0)' : 'rgba(255,60,0,0)');
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.moveTo(-12, -6);
+    ctx.moveTo(-12, -spread);
     ctx.lineTo(-SHIP_RADIUS - flicker, 0);
-    ctx.lineTo(-12,  6);
+    ctx.lineTo(-12,  spread);
     ctx.fill();
   }
 
@@ -340,6 +347,7 @@ function drawHUD(state, now) {
   ctx.textAlign   = 'left';
   ctx.fillText(s0.name, 12, 22);
   drawHearts(12, 36, s0.health, COLORS[0], 'left');
+  drawBoostBar(12, 50, s0.lastBoost || 0, COLORS[0], 'left');
 
   // P2 — top right
   ctx.fillStyle   = COLORS[1];
@@ -347,6 +355,7 @@ function drawHUD(state, now) {
   ctx.textAlign   = 'right';
   ctx.fillText(s1.name, ARENA_W - 12, 22);
   drawHearts(ARENA_W - 12, 36, s1.health, COLORS[1], 'right');
+  drawBoostBar(ARENA_W - 12, 50, s1.lastBoost || 0, COLORS[1], 'right');
 
   // Round + score — top centre
   ctx.shadowBlur  = 0;
@@ -410,4 +419,28 @@ function drawHearts(x, y, health, color, align) {
     const offset  = align === 'left' ? i * 18 : -i * 18;
     ctx.fillText('♥', x + offset, y);
   }
+}
+
+function drawBoostBar(x, y, lastBoost, color, align) {
+  const elapsed  = Date.now() - lastBoost;
+  const ready    = elapsed >= BOOST_CD;
+  const fill     = Math.min(1, elapsed / BOOST_CD);
+  const barW     = 54;
+  const barH     = 4;
+  const bx       = align === 'right' ? x - barW : x;
+
+  ctx.shadowBlur = 0;
+  // Track
+  ctx.fillStyle  = '#111128';
+  ctx.fillRect(bx, y, barW, barH);
+  // Fill
+  ctx.fillStyle  = ready ? color : '#33335a';
+  if (ready) { ctx.shadowColor = color; ctx.shadowBlur = 6; }
+  ctx.fillRect(bx, y, barW * fill, barH);
+  ctx.shadowBlur = 0;
+  // Label
+  ctx.font       = '8px monospace';
+  ctx.fillStyle  = ready ? color : '#33335a';
+  ctx.textAlign  = align;
+  ctx.fillText(ready ? 'BOOST' : `${((BOOST_CD - elapsed) / 1000).toFixed(1)}s`, x, y + 14);
 }
