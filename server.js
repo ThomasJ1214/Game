@@ -36,6 +36,7 @@ const SHOOT_CD      = 300;    // ms
 const MAX_BULLETS   = 3;      // per player
 const WINS_NEEDED   = 3;      // rounds to win the match
 const RESPAWN_MS    = 1800;   // ms between round-end and next round
+const INVINCIBLE_MS = 2000;   // ms of spawn invincibility
 
 // ─────────────────────────────────────────────────────────────
 // IN-MEMORY STATE
@@ -77,14 +78,16 @@ function makeShip(index, name) {
   return {
     index,
     name,
-    x:        index === 0 ? 200 : 600,
-    y:        ARENA_H / 2,
-    angle:    index === 0 ? 0 : Math.PI,
+    x:               index === 0 ? 200 : 600,
+    y:               ARENA_H / 2,
+    angle:           index === 0 ? 0 : Math.PI,
     vx: 0, vy: 0,
-    health:   3,
-    alive:    true,
-    thrustOn: false,
-    lastShot: 0
+    health:          3,
+    alive:           true,
+    thrustOn:        false,
+    lastShot:        0,
+    invincible:      true,
+    invincibleUntil: Date.now() + INVINCIBLE_MS
   };
 }
 
@@ -166,7 +169,7 @@ function resolveCollisions(state) {
   const remove = new Set();
   for (const b of state.bullets) {
     const target = state.ships[1 - b.ownerIndex];
-    if (!target.alive) continue;
+    if (!target.alive || target.invincible) continue;   // skip dead or invincible
     if (Math.hypot(b.x - target.x, b.y - target.y) < SHIP_RADIUS + BULLET_RADIUS) {
       target.health--;
       if (target.health <= 0) target.alive = false;
@@ -187,7 +190,8 @@ function checkRound(room) {
   const dead = state.ships.filter(s => !s.alive);
   if (dead.length === 0) return;
 
-  state.status = 'round_over';
+  state.status     = 'round_over';
+  state.roundOverAt = Date.now();   // client uses this for countdown display
 
   if (dead.length === 1) {
     const winIdx = 1 - dead[0].index;
@@ -252,6 +256,10 @@ function startLoop(room) {
     const now = Date.now();
 
     if (state.status === 'playing') {
+      // Clear expired invincibility
+      for (const ship of state.ships) {
+        if (ship.invincible && now >= ship.invincibleUntil) ship.invincible = false;
+      }
       for (const ship of state.ships) {
         if (!ship.alive) continue;
         const inp = room.inputs[ship.index];

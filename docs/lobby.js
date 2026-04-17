@@ -6,7 +6,6 @@
 
 const $ = id => document.getElementById(id);
 
-// Screens
 const screens = {
   menu:     $('screen-menu'),
   lobby:    $('screen-lobby'),
@@ -19,10 +18,10 @@ function showScreen(name) {
   screens[name].classList.add('active');
 }
 
-// Menu
+// Menu elements
 const inpName      = $('inp-name');
-const btnCreate    = $('btn-create');
-const btnShowJoin  = $('btn-show-join');
+const btnCreate    = $('btn-create');    // tab button
+const btnShowJoin  = $('btn-show-join'); // tab button
 const createPanel  = $('create-panel');
 const joinPanel    = $('join-panel');
 const btnDoCreate  = $('btn-do-create');
@@ -30,7 +29,7 @@ const inpCode      = $('inp-code');
 const btnJoin      = $('btn-join');
 const menuError    = $('menu-error');
 
-// Lobby
+// Lobby elements
 const lobbyHeading = $('lobby-heading');
 const codeBlock    = $('code-block');
 const roomCodeEl   = $('room-code');
@@ -39,24 +38,26 @@ const btnStart     = $('btn-start');
 const btnLobbyBack = $('btn-lobby-back');
 const lobbyStatus  = $('lobby-status');
 
-// Game over
-const goWinner     = $('go-winner');
-const goScores     = $('go-scores');
-const btnRematch   = $('btn-rematch');
-const btnGoBack    = $('btn-go-back');
-const rematchWait  = $('rematch-wait');
+// Game over elements
+const goWinner    = $('go-winner');
+const goScores    = $('go-scores');
+const btnRematch  = $('btn-rematch');
+const btnGoBack   = $('btn-go-back');
+const rematchWait = $('rematch-wait');
 
 // ─────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────
 
-let socket          = null;
-let myPlayerIndex   = null;
-let isHost          = false;
-let currentCode     = '';
+let socket        = null;
+let myPlayerIndex = null;
+let isHost        = false;
+let currentCode   = '';
+let mode          = 'create';    // 'create' | 'join'
+let responseTimer = null;        // timeout if server never replies
 
 // ─────────────────────────────────────────────────────────────
-// HELPERS
+// ERROR / STATUS HELPERS
 // ─────────────────────────────────────────────────────────────
 
 function showError(msg) {
@@ -64,84 +65,108 @@ function showError(msg) {
   menuError.classList.remove('hidden');
 }
 function clearError() {
-  menuError.classList.add('hidden');
   menuError.textContent = '';
-}
-
-function connectSocket() {
-  if (socket) return;
-  // window.BACKEND_URL is set in config.js
-  // Empty string / falsy = same-origin (local dev with `npm start`)
-  socket = window.BACKEND_URL ? io(window.BACKEND_URL) : io();
-  setupSocketHandlers();
-}
-
-function renderPlayerList(players) {
-  playerListEl.innerHTML = '';
-  for (let i = 0; i < 2; i++) {
-    const p    = players.find(p => p.index === i);
-    const slot = document.createElement('div');
-    slot.className = `player-slot ${p ? (i === 0 ? 'p1' : 'p2') : 'empty'}`;
-    slot.innerHTML =
-      `<span class="slot-num">P${i + 1}</span>` +
-      `<span class="slot-name">${p ? p.name : 'Waiting…'}</span>` +
-      (p && p.index === myPlayerIndex ? ' <span style="font-size:.65rem;color:#606080">(you)</span>' : '');
-    playerListEl.appendChild(slot);
-  }
-}
-
-function updateStartButton(players) {
-  const ready = players.length >= 2;
-  btnStart.disabled = !ready || !isHost;
-  lobbyStatus.textContent = ready
-    ? (isHost ? 'Both players ready — you can start!' : 'Waiting for host to start…')
-    : 'Waiting for opponent to join…';
+  menuError.classList.add('hidden');
 }
 
 // ─────────────────────────────────────────────────────────────
-// MODE TOGGLE (create / join tabs)
+// BUTTON LOADING STATE
 // ─────────────────────────────────────────────────────────────
 
-let mode = 'create';
+function setLoading(btn, loading, label) {
+  btn.disabled   = loading;
+  btn.textContent = loading ? 'Connecting…' : label;
+}
+
+// ─────────────────────────────────────────────────────────────
+// MODE TABS (Create / Join)
+// ─────────────────────────────────────────────────────────────
 
 function setMode(m) {
   mode = m;
   clearError();
-  btnCreate.classList.toggle('active', m === 'create');
+
+  // Update tab active states
+  btnCreate.classList.toggle('active',   m === 'create');
   btnShowJoin.classList.toggle('active', m === 'join');
-  createPanel.classList.toggle('hidden', m !== 'create');
-  joinPanel.classList.toggle('hidden', m !== 'join');
-  if (m === 'join') inpCode.focus();
+
+  // Show/hide panels
+  if (m === 'create') {
+    createPanel.classList.remove('hidden');
+    joinPanel.classList.add('hidden');
+  } else {
+    joinPanel.classList.remove('hidden');
+    createPanel.classList.add('hidden');
+    inpCode.focus();
+  }
+
+  // Reset button labels when switching
+  setLoading(btnDoCreate, false, 'Create →');
+  setLoading(btnJoin,     false, 'Join →');
 }
 
-btnCreate.addEventListener('click', () => setMode('create'));
+// Wire up tabs
+btnCreate.addEventListener('click',   () => setMode('create'));
 btnShowJoin.addEventListener('click', () => setMode('join'));
 
 // ─────────────────────────────────────────────────────────────
-// MENU EVENT LISTENERS
+// SOCKET
+// ─────────────────────────────────────────────────────────────
+
+function connectSocket(onReady) {
+  // Already connected — go straight to the action
+  if (socket && socket.connected) { onReady(); return; }
+
+  // Disconnect any stale socket first
+  if (socket) { socket.disconnect(); socket = null; }
+
+  socket = window.BACKEND_URL ? io(window.BACKEND_URL) : io();
+  setupSocketHandlers();
+
+  socket.once('connect', onReady);
+
+  socket.once('connect_error', () => {
+    clearTimeout(responseTimer);
+    socket = null;
+    setLoading(btnDoCreate, false, 'Create →');
+    setLoading(btnJoin,     false, 'Join →');
+    showError('Cannot reach server. Make sure BACKEND_URL is set in config.js.');
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// MENU ACTIONS
 // ─────────────────────────────────────────────────────────────
 
 btnDoCreate.addEventListener('click', doCreate);
 btnJoin.addEventListener('click', doJoin);
 
-// Enter key behaviour depends on active mode
+// Enter key: create if on create panel, focus code if on join panel
 inpName.addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
-  if (mode === 'join') inpCode.focus();
-  else doCreate();
+  mode === 'join' ? inpCode.focus() : doCreate();
 });
-
+// Enter on code input triggers join
 inpCode.addEventListener('keydown', e => {
   if (e.key === 'Enter') doJoin();
-  // Auto-uppercase
+  // Auto-uppercase as you type
   setTimeout(() => { inpCode.value = inpCode.value.toUpperCase(); }, 0);
 });
 
 function doCreate() {
   clearError();
   const name = inpName.value.trim() || 'Anonymous';
-  connectSocket();
-  socket.emit('create_lobby', { name });
+  setLoading(btnDoCreate, true, 'Create →');
+
+  // 8-second timeout in case server never replies
+  responseTimer = setTimeout(() => {
+    setLoading(btnDoCreate, false, 'Create →');
+    showError('Server did not respond. Check your connection.');
+  }, 8000);
+
+  connectSocket(() => {
+    socket.emit('create_lobby', { name });
+  });
 }
 
 function doJoin() {
@@ -149,36 +174,68 @@ function doJoin() {
   const name = inpName.value.trim() || 'Anonymous';
   const code = inpCode.value.trim().toUpperCase();
   if (!code) { showError('Enter a room code first.'); return; }
-  connectSocket();
-  socket.emit('join_lobby', { name, roomCode: code });
+
+  setLoading(btnJoin, true, 'Join →');
+
+  responseTimer = setTimeout(() => {
+    setLoading(btnJoin, false, 'Join →');
+    showError('Server did not respond. Check your connection.');
+  }, 8000);
+
+  connectSocket(() => {
+    socket.emit('join_lobby', { name, roomCode: code });
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
-// LOBBY EVENT LISTENERS
+// LOBBY HELPERS
 // ─────────────────────────────────────────────────────────────
 
-// Click room code to copy
+function renderPlayerList(players) {
+  playerListEl.innerHTML = '';
+  for (let i = 0; i < 2; i++) {
+    const p    = players.find(p => p.index === i);
+    const slot = document.createElement('div');
+    slot.className = `player-slot ${p ? (i === 0 ? 'p1' : 'p2') : 'empty'}`;
+    const youTag = (p && p.index === myPlayerIndex)
+      ? ' <span class="you-tag">(you)</span>' : '';
+    slot.innerHTML =
+      `<span class="slot-num">P${i + 1}</span>` +
+      `<span class="slot-name">${p ? p.name : 'Waiting…'}</span>` +
+      youTag;
+    playerListEl.appendChild(slot);
+  }
+}
+
+function updateStartButton(players) {
+  const ready   = players.length >= 2;
+  const canStart = ready && isHost;
+  btnStart.disabled = !canStart;
+
+  if (!ready)        lobbyStatus.textContent = 'Waiting for opponent to join…';
+  else if (!isHost)  lobbyStatus.textContent = 'Waiting for host to start…';
+  else               lobbyStatus.textContent = 'Both players ready — hit Start!';
+}
+
+// ─────────────────────────────────────────────────────────────
+// LOBBY ACTIONS
+// ─────────────────────────────────────────────────────────────
+
+// Click room code to copy it
 roomCodeEl.addEventListener('click', () => {
   const prev = roomCodeEl.textContent;
-  const copyText = currentCode;
-
-  const finish = () => {
+  const copy = () => {
     roomCodeEl.textContent = 'COPIED!';
     setTimeout(() => { roomCodeEl.textContent = prev; }, 1400);
   };
-
   if (navigator.clipboard) {
-    navigator.clipboard.writeText(copyText).then(finish).catch(finish);
+    navigator.clipboard.writeText(currentCode).then(copy).catch(copy);
   } else {
-    const t = document.createElement('textarea');
-    t.value = copyText;
-    t.style.position = 'fixed';
-    t.style.opacity  = '0';
-    document.body.appendChild(t);
-    t.select();
+    const t = Object.assign(document.createElement('textarea'),
+      { value: currentCode, style: 'position:fixed;opacity:0' });
+    document.body.appendChild(t); t.select();
     document.execCommand('copy');
-    document.body.removeChild(t);
-    finish();
+    document.body.removeChild(t); copy();
   }
 });
 
@@ -187,12 +244,16 @@ btnStart.addEventListener('click', () => {
 });
 
 btnLobbyBack.addEventListener('click', () => {
+  clearTimeout(responseTimer);
   if (socket) { socket.emit('leave_room'); socket.disconnect(); socket = null; }
+  setMode('create');   // reset tabs for next time
+  setLoading(btnDoCreate, false, 'Create →');
+  setLoading(btnJoin,     false, 'Join →');
   showScreen('menu');
 });
 
 // ─────────────────────────────────────────────────────────────
-// GAME OVER EVENT LISTENERS
+// GAME OVER ACTIONS
 // ─────────────────────────────────────────────────────────────
 
 btnRematch.addEventListener('click', () => {
@@ -213,6 +274,8 @@ btnGoBack.addEventListener('click', () => {
 function setupSocketHandlers() {
 
   socket.on('lobby_created', ({ roomCode, playerIndex, players }) => {
+    clearTimeout(responseTimer);
+    setLoading(btnDoCreate, false, 'Create →');
     myPlayerIndex = playerIndex;
     currentCode   = roomCode;
     isHost        = true;
@@ -227,12 +290,14 @@ function setupSocketHandlers() {
   });
 
   socket.on('lobby_joined', ({ roomCode, playerIndex, players }) => {
+    clearTimeout(responseTimer);
+    setLoading(btnJoin, false, 'Join →');
     myPlayerIndex = playerIndex;
     currentCode   = roomCode;
     isHost        = false;
 
     lobbyHeading.textContent = `Room ${roomCode}`;
-    codeBlock.classList.add('hidden');   // guest doesn't need to share
+    codeBlock.classList.add('hidden');   // guest doesn't need to share code
 
     renderPlayerList(players);
     updateStartButton(players);
@@ -240,6 +305,9 @@ function setupSocketHandlers() {
   });
 
   socket.on('lobby_error', ({ message }) => {
+    clearTimeout(responseTimer);
+    setLoading(btnDoCreate, false, 'Create →');
+    setLoading(btnJoin,     false, 'Join →');
     showError(message);
   });
 
@@ -255,20 +323,14 @@ function setupSocketHandlers() {
   });
 
   socket.on('game_over', ({ winner, winnerName, playerNames, scores }) => {
-    // Stop the client render loop
     if (typeof stopGame === 'function') stopGame();
-
-    // Winner headline
     const cls = winner === 0 ? 'p1-wins' : 'p2-wins';
-    goWinner.textContent  = `${winnerName} wins!`;
-    goWinner.className    = `winner-name ${cls}`;
-
-    // Final scores
-    goScores.innerHTML =
+    goWinner.textContent = `${winnerName} wins!`;
+    goWinner.className   = `winner-name ${cls}`;
+    goScores.innerHTML   =
       `<span class="sp1">${playerNames[0]}: ${scores[0]}</span>` +
       `<span class="sdiv">vs</span>` +
       `<span class="sp2">${playerNames[1]}: ${scores[1]}</span>`;
-
     btnRematch.disabled = false;
     rematchWait.classList.add('hidden');
     showScreen('gameover');
@@ -290,18 +352,22 @@ function setupSocketHandlers() {
   socket.on('player_disconnected', ({ name }) => {
     if (typeof stopGame === 'function') stopGame();
     $('disc-msg').textContent = `${name} disconnected.`;
-    $('disc-overlay').classList.remove('hidden');
-    $('disc-overlay').classList.add('visible');
+    const overlay = $('disc-overlay');
+    overlay.classList.remove('hidden');
+    overlay.classList.add('visible');
     $('btn-disc-back').addEventListener('click', () => {
       if (socket) { socket.disconnect(); socket = null; }
       location.reload();
     }, { once: true });
   });
 
-  socket.on('disconnect', () => {
-    // Server closed / network lost
-    if (typeof stopGame === 'function') stopGame();
-    alert('Connection lost. Please refresh and try again.');
-    location.reload();
+  socket.on('disconnect', (reason) => {
+    // Only show alert if we were actively in a game/lobby (not intentional leave)
+    if (reason !== 'io client disconnect') {
+      if (typeof stopGame === 'function') stopGame();
+      showScreen('menu');
+      showError('Disconnected from server. Please try again.');
+      socket = null;
+    }
   });
 }

@@ -218,7 +218,12 @@ input[type="text"]::placeholder { color: #282848; }
   padding-top: 14px;
   border-top: 1px solid var(--border);
 }
-.mode-panel.hidden { display: none; }
+
+.you-tag {
+  font-size: .65rem;
+  color: var(--muted);
+  margin-left: 4px;
+}
 
 .mode-hint {
   font-size: .75rem;
