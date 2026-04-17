@@ -20,16 +20,24 @@
       <input id="inp-name" type="text" maxlength="20"
              placeholder="Enter your name" autocomplete="off" spellcheck="false">
 
-      <div class="row gap mt">
-        <button id="btn-create" class="btn-neon">Create Game</button>
-        <button id="btn-show-join" class="btn-ghost">Join Game</button>
+      <!-- Mode toggle tabs -->
+      <div class="mode-tabs mt">
+        <button id="btn-create" class="mode-tab active">✦ Create</button>
+        <button id="btn-show-join" class="mode-tab">⤵ Join</button>
       </div>
 
-      <div id="join-form" class="col mt hidden">
+      <!-- Create panel -->
+      <div id="create-panel" class="mode-panel">
+        <p class="mode-hint">You'll get a code to share with your friend.</p>
+        <button id="btn-do-create" class="btn-neon">Create →</button>
+      </div>
+
+      <!-- Join panel -->
+      <div id="join-panel" class="mode-panel hidden">
         <label for="inp-code">Room code</label>
         <input id="inp-code" type="text" maxlength="4"
-               placeholder="4-letter code" autocomplete="off" spellcheck="false">
-        <button id="btn-join" class="btn-neon mt-sm">Join</button>
+               placeholder="ABCD" autocomplete="off" spellcheck="false">
+        <button id="btn-join" class="btn-neon mt-sm">Join →</button>
       </div>
 
       <p id="menu-error" class="error hidden"></p>

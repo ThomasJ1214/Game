@@ -23,7 +23,9 @@ function showScreen(name) {
 const inpName      = $('inp-name');
 const btnCreate    = $('btn-create');
 const btnShowJoin  = $('btn-show-join');
-const joinForm     = $('join-form');
+const createPanel  = $('create-panel');
+const joinPanel    = $('join-panel');
+const btnDoCreate  = $('btn-do-create');
 const inpCode      = $('inp-code');
 const btnJoin      = $('btn-join');
 const menuError    = $('menu-error');
@@ -97,38 +99,56 @@ function updateStartButton(players) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// MODE TOGGLE (create / join tabs)
+// ─────────────────────────────────────────────────────────────
+
+let mode = 'create';
+
+function setMode(m) {
+  mode = m;
+  clearError();
+  btnCreate.classList.toggle('active', m === 'create');
+  btnShowJoin.classList.toggle('active', m === 'join');
+  createPanel.classList.toggle('hidden', m !== 'create');
+  joinPanel.classList.toggle('hidden', m !== 'join');
+  if (m === 'join') inpCode.focus();
+}
+
+btnCreate.addEventListener('click', () => setMode('create'));
+btnShowJoin.addEventListener('click', () => setMode('join'));
+
+// ─────────────────────────────────────────────────────────────
 // MENU EVENT LISTENERS
 // ─────────────────────────────────────────────────────────────
 
-btnCreate.addEventListener('click', () => {
+btnDoCreate.addEventListener('click', doCreate);
+btnJoin.addEventListener('click', doJoin);
+
+// Enter key behaviour depends on active mode
+inpName.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  if (mode === 'join') inpCode.focus();
+  else doCreate();
+});
+
+inpCode.addEventListener('keydown', e => {
+  if (e.key === 'Enter') doJoin();
+  // Auto-uppercase
+  setTimeout(() => { inpCode.value = inpCode.value.toUpperCase(); }, 0);
+});
+
+function doCreate() {
   clearError();
   const name = inpName.value.trim() || 'Anonymous';
   connectSocket();
   socket.emit('create_lobby', { name });
-});
-
-btnShowJoin.addEventListener('click', () => {
-  joinForm.classList.toggle('hidden');
-  if (!joinForm.classList.contains('hidden')) inpCode.focus();
-});
-
-btnJoin.addEventListener('click', doJoin);
-
-inpCode.addEventListener('keydown', e => {
-  if (e.key === 'Enter') doJoin();
-  // Auto-uppercase as you type
-  setTimeout(() => { inpCode.value = inpCode.value.toUpperCase(); }, 0);
-});
-
-inpName.addEventListener('keydown', e => {
-  if (e.key === 'Enter') btnCreate.click();
-});
+}
 
 function doJoin() {
   clearError();
   const name = inpName.value.trim() || 'Anonymous';
   const code = inpCode.value.trim().toUpperCase();
-  if (!code) { showError('Enter a room code.'); return; }
+  if (!code) { showError('Enter a room code first.'); return; }
   connectSocket();
   socket.emit('join_lobby', { name, roomCode: code });
 }
