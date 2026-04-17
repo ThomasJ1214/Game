@@ -11,4 +11,4 @@
 // (falls back to same-origin automatically).
 // ─────────────────────────────────────────────────────────────
 
-window.BACKEND_URL = '';
+window.BACKEND_URL = 'game-production-fa7b.up.railway.app';
