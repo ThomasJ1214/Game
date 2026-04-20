@@ -25,10 +25,13 @@ app.use(express.static(path.join(__dirname, 'docs')));
 const ARENA_W       = 800;
 const ARENA_H       = 600;
 const SHIP_RADIUS   = 16;
-const SHIP_THRUST   = 0.25;
-const SHIP_ROTATE   = 0.07;   // rad / tick
-const SHIP_MAX_SPD  = 5;
-const SHIP_DRAG     = 0.97;
+const SHIP_THRUST   = 0.30;
+const SHIP_ROTATE   = 0.07;   // rad / tick (kept for boost; main rotation uses angularVel)
+const SHIP_MAX_SPD  = 6;
+const SHIP_DRAG     = 0.975;
+const ANGULAR_ACCEL = 0.025;  // rad/tick added to angular velocity per tick
+const ANGULAR_DRAG  = 0.72;   // angular friction (lower = snappier stop)
+const ANGULAR_MAX   = 0.088;  // rad/tick cap
 const BULLET_SPEED  = 9;
 const BULLET_RADIUS = 4;
 const BULLET_LIFE   = 90;     // ticks  (~3 s at 30 fps)
@@ -89,6 +92,7 @@ function makeShip(index, name) {
     thrustOn:        false,
     reverseThrustOn: false,
     boosting:        false,
+    angularVel:      0,
     lastShot:        0,
     lastBoost:       0,
     boostUntil:      0,
@@ -120,8 +124,12 @@ function respawnShips(state) {
 // ─────────────────────────────────────────────────────────────
 
 function stepShip(ship, inp, now) {
-  if (inp.a) ship.angle -= SHIP_ROTATE;
-  if (inp.d) ship.angle += SHIP_ROTATE;
+  // Angular momentum — smooth spin-up and spin-down
+  if (inp.a) ship.angularVel -= ANGULAR_ACCEL;
+  if (inp.d) ship.angularVel += ANGULAR_ACCEL;
+  ship.angularVel = Math.max(-ANGULAR_MAX, Math.min(ANGULAR_MAX, ship.angularVel));
+  ship.angularVel *= ANGULAR_DRAG;
+  ship.angle += ship.angularVel;
 
   // Boost (Shift) — short burst, 3.5 s cooldown
   if (inp.shift && now - ship.lastBoost >= BOOST_CD) {
