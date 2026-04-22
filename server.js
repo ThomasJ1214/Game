@@ -24,8 +24,9 @@ const BOOST_MULT_SPD = 2.2;
 const MAX_PLAYERS    = 15;
 const BOT_FILL       = 6;        // total entities when game starts (humans + bots)
 const XP_BLOCK_COUNT = 90;
-const XP_KILL_PLAYER = 150;
-const XP_KILL_BOT    = 80;
+const XP_KILL_PLAYER      = 150;
+const XP_KILL_BOT         = 80;
+const XP_BLOCK_RESPAWN_MS = 15000;
 const ANGULAR_ACCEL  = 0.025;
 const ANGULAR_DRAG   = 0.72;
 const ANGULAR_MAX    = 0.088;
@@ -117,14 +118,16 @@ function makeShip(id, index, name, isBot) {
 // ─── XP BLOCK FACTORY ─────────────────────────────────────────────────────────
 function makeXpBlock() {
   return {
-    id:     nextBlockId++,
-    x:      rnd(60, WORLD_W-60),
-    y:      rnd(60, WORLD_H-60),
-    r:      14 + Math.random() * 14,
-    health: 2 + Math.floor(Math.random() * 3),
-    maxHealth: 0,  // set below
-    xp:     30 + Math.floor(Math.random() * 80),
-    hue:    Math.floor(Math.random() * 360),
+    id:        nextBlockId++,
+    x:         rnd(60, WORLD_W-60),
+    y:         rnd(60, WORLD_H-60),
+    r:         14 + Math.random() * 14,
+    health:    2 + Math.floor(Math.random() * 3),
+    maxHealth: 0,
+    xp:        30 + Math.floor(Math.random() * 80),
+    hue:       Math.floor(Math.random() * 360),
+    alive:     true,
+    respawnAt: 0,
   };
 }
 
@@ -270,15 +273,15 @@ function resolveCollisions(state, room, now) {
     // vs xp blocks
     for (const blk of state.xpBlocks) {
       if (remove.has(b.id)) break;
+      if (!blk.alive) continue;
       if (Math.hypot(b.x-blk.x, b.y-blk.y) < blk.r+BULLET_RADIUS) {
         blk.health--;
         remove.add(b.id);
         if (blk.health <= 0) {
           const shooter = state.ships[b.ownerIndex];
           if (shooter && shooter.alive) giveXp(shooter, blk.xp);
-          // respawn block
-          const nb = makeXpBlock(); nb.maxHealth = nb.health;
-          Object.assign(blk, nb, {id: blk.id});
+          blk.alive     = false;
+          blk.respawnAt = now + XP_BLOCK_RESPAWN_MS;
         }
       }
     }
@@ -377,6 +380,7 @@ function botThink(bot, state, now) {
     if (!bestTarget || bestDist > 800) {
       let bd2=Infinity, bt2=null;
       for (const blk of state.xpBlocks) {
+        if (!blk.alive) continue;
         const d = Math.hypot(blk.x-bot.x, blk.y-bot.y);
         if (d < bd2) { bd2=d; bt2=blk; }
       }
@@ -430,7 +434,7 @@ function broadcast(room) {
     lastBoost:s.lastBoost, respawnAt:s.respawnAt,
     ss: { boostCd:s.ss.boostCd, health:s.ss.health },
   }));
-  const payload = { ships, bullets: gs.bullets, xpBlocks: gs.xpBlocks, tick: gs.tick };
+  const payload = { ships, bullets: gs.bullets, xpBlocks: gs.xpBlocks.filter(b => b.alive), tick: gs.tick };
   for (const p of room.players) io.to(p.id).emit('game_tick', { gameState: payload });
 }
 
@@ -452,6 +456,14 @@ function startLoop(room) {
       if (ship.alive && ship.ss.regenRate > 0) {
         const interval = Math.max(1, Math.floor(300 / ship.ss.regenRate));
         if (state.tick % interval === 0 && ship.health < ship.ss.health) ship.health++;
+      }
+    }
+
+    // Revive XP blocks after respawn delay
+    for (const blk of state.xpBlocks) {
+      if (!blk.alive && blk.respawnAt > 0 && now >= blk.respawnAt) {
+        const nb = makeXpBlock(); nb.maxHealth = nb.health;
+        Object.assign(blk, nb, { id: blk.id });
       }
     }
 

@@ -658,6 +658,24 @@ function drawHUD(state, now) {
     drawBoostBar(12, 50, myShip.lastBoost || 0, col, 'left');
   }
 
+  // Respawn countdown overlay
+  if (myShip && !myShip.alive && myShip.respawnAt > 0) {
+    const remaining = Math.max(0, (myShip.respawnAt - Date.now()) / 1000);
+    ctx.save();
+    ctx.textAlign   = 'center';
+    ctx.font        = 'bold 32px monospace';
+    ctx.fillStyle   = 'rgba(255,80,80,0.92)';
+    ctx.shadowColor = '#ff2222';
+    ctx.shadowBlur  = 24;
+    ctx.fillText('DESTROYED', ARENA_W / 2, ARENA_H / 2 - 18);
+    ctx.font        = 'bold 18px monospace';
+    ctx.fillStyle   = '#ffffff';
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur  = 10;
+    ctx.fillText(`Respawning in ${remaining.toFixed(1)}s`, ARENA_W / 2, ARENA_H / 2 + 16);
+    ctx.restore();
+  }
+
   // Leaderboard — top right
   drawLeaderboard(state);
 
