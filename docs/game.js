@@ -6,6 +6,8 @@
 
 const ARENA_W       = 800;
 const ARENA_H       = 600;
+const WORLD_W       = 3200;
+const WORLD_H       = 2400;
 const SHIP_RADIUS   = 16;
 const BULLET_RADIUS = 4;
 const BOOST_CD      = 3500;
@@ -29,6 +31,8 @@ let shockwaves    = [];
 let boostTrail    = [];
 let shakeAmount   = 0;
 let lastInputSend = 0;
+let cameraX       = 0;
+let cameraY       = 0;
 
 const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
 
@@ -45,6 +49,8 @@ function initGame(sock, initialState, yourIndex) {
   shockwaves  = [];
   boostTrail  = [];
   shakeAmount = 0;
+  cameraX     = 0;
+  cameraY     = 0;
   generation++;
   const myGen = generation;
 
@@ -294,13 +300,20 @@ function drawBackground(now) {
   }
   ctx.globalAlpha = 1;
 
-  // Arena border — double-line glow
-  ctx.strokeStyle = 'rgba(0,255,255,0.05)';
-  ctx.lineWidth   = 4;
-  ctx.strokeRect(2, 2, ARENA_W - 4, ARENA_H - 4);
-  ctx.strokeStyle = 'rgba(0,255,255,0.12)';
-  ctx.lineWidth   = 1;
-  ctx.strokeRect(2, 2, ARENA_W - 4, ARENA_H - 4);
+}
+
+function drawWorldBorder() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,255,255,0.08)';
+  ctx.lineWidth   = 6;
+  ctx.shadowColor = 'rgba(0,255,255,0.4)';
+  ctx.shadowBlur  = 18;
+  ctx.strokeRect(0, 0, WORLD_W, WORLD_H);
+  ctx.strokeStyle = 'rgba(0,255,255,0.18)';
+  ctx.lineWidth   = 2;
+  ctx.shadowBlur  = 8;
+  ctx.strokeRect(0, 0, WORLD_W, WORLD_H);
+  ctx.restore();
 }
 
 function render(state, now) {
@@ -317,7 +330,21 @@ function render(state, now) {
     shakeAmount = 0;
   }
 
+  // Update camera to follow the local player, clamped to world bounds
+  const myShip = state.ships[_myIndex];
+  if (myShip && myShip.alive) {
+    cameraX = Math.max(0, Math.min(WORLD_W - ARENA_W, myShip.x - ARENA_W / 2));
+    cameraY = Math.max(0, Math.min(WORLD_H - ARENA_H, myShip.y - ARENA_H / 2));
+  }
+
+  // Background (stars, nebulas) stays in screen space
   drawBackground(now);
+
+  // Apply camera offset for all world-space objects
+  ctx.save();
+  ctx.translate(-cameraX, -cameraY);
+
+  drawWorldBorder();
   updateDrawShockwaves();
   updateDrawExplosions();
   tickBoostTrail(state);
@@ -327,6 +354,9 @@ function render(state, now) {
     if (ship.alive) drawShip(ship, now);
   }
 
+  ctx.restore();
+
+  // HUD stays in screen space
   drawHUD(state, now);
   ctx.restore();
 }
