@@ -326,10 +326,10 @@ function setupSocketHandlers() {
     updateStartButton(players);
   });
 
-  socket.on('game_start', ({ gameState, yourIndex }) => {
+  socket.on('game_start', ({ gameState, yourIndex, asteroids }) => {
     myPlayerIndex = yourIndex;
     showScreen('game');
-    initGame(socket, gameState, yourIndex);
+    initGame(socket, gameState, yourIndex, asteroids);
   });
 
   socket.on('game_over', ({ winner, winnerName, playerNames, scores }) => {
@@ -351,12 +351,12 @@ function setupSocketHandlers() {
     rematchWait.classList.remove('hidden');
   });
 
-  socket.on('rematch_start', ({ gameState, yourIndex }) => {
+  socket.on('rematch_start', ({ gameState, yourIndex, asteroids }) => {
     myPlayerIndex = yourIndex;
     btnRematch.disabled = false;
     rematchWait.classList.add('hidden');
     showScreen('game');
-    initGame(socket, gameState, yourIndex);
+    initGame(socket, gameState, yourIndex, asteroids);
   });
 
   socket.on('player_disconnected', ({ name }) => {

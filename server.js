@@ -12,8 +12,8 @@ const io     = new Server(server, { cors: { origin: '*', methods: ['GET','POST']
 app.use(express.static(path.join(__dirname, 'docs')));
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
-const WORLD_W        = 3200;
-const WORLD_H        = 2400;
+const WORLD_W        = 6400;
+const WORLD_H        = 4800;
 const SHIP_RADIUS    = 16;
 const BULLET_RADIUS  = 4;
 const BULLET_LIFE    = 120;      // ticks
@@ -23,7 +23,7 @@ const BOOST_MULT     = 2.4;
 const BOOST_MULT_SPD = 2.2;
 const MAX_PLAYERS    = 15;
 const BOT_FILL       = 6;        // total entities when game starts (humans + bots)
-const XP_BLOCK_COUNT = 45;
+const XP_BLOCK_COUNT = 90;
 const XP_KILL_PLAYER = 150;
 const XP_KILL_BOT    = 80;
 const ANGULAR_ACCEL  = 0.025;
@@ -35,6 +35,42 @@ const COLORS = [
   '#8888ff','#ff4488','#44ffaa','#ff6666','#66aaff',
   '#aaff66','#ffaa44','#cc44ff','#44ffff','#ff44cc',
 ];
+
+// ─── ASTEROIDS ───────────────────────────────────────────────────────────────
+// Deterministic obstacle field — same layout every server start.
+const ASTEROIDS = (() => {
+  let s = 31415;
+  const rng = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000; };
+  const result = [];
+  // [cx, cy, count, spread, rMin, rMax]
+  const clusters = [
+    [3200, 2400, 6, 300,  60, 130],   // center
+    [1100,  950, 5, 260,  45, 100],   // NW
+    [5300,  950, 4, 230,  50,  95],   // NE
+    [1000, 3850, 5, 270,  45, 105],   // SW
+    [5300, 3850, 4, 250,  50, 100],   // SE
+    [3200,  900, 3, 210,  40,  85],   // N
+    [3200, 3900, 3, 210,  45,  80],   // S
+    [1000, 2400, 3, 190,  40,  80],   // W
+    [5400, 2400, 3, 190,  40,  80],   // E
+    [2200, 1600, 3, 160,  35,  70],   // NW-inner
+    [4200, 1600, 3, 160,  35,  70],   // NE-inner
+    [2200, 3200, 3, 160,  35,  70],   // SW-inner
+    [4200, 3200, 3, 160,  35,  70],   // SE-inner
+  ];
+  for (const [cx, cy, count, spread, rMin, rMax] of clusters) {
+    for (let i = 0; i < count; i++) {
+      const angle = rng() * Math.PI * 2;
+      const dist  = rng() * spread;
+      result.push({
+        x: Math.round(cx + Math.cos(angle) * dist),
+        y: Math.round(cy + Math.sin(angle) * dist),
+        r: Math.round(rMin + rng() * (rMax - rMin)),
+      });
+    }
+  }
+  return result;
+})();
 
 // ─── IN-MEMORY STATE ──────────────────────────────────────────────────────────
 const rooms      = {};
@@ -103,7 +139,7 @@ function makeGameState(humanPlayers) {
   const xpBlocks = Array.from({length: XP_BLOCK_COUNT}, () => {
     const b = makeXpBlock(); b.maxHealth = b.health; return b;
   });
-  return { ships, bullets:[], xpBlocks, tick:0, status:'playing' };
+  return { ships, bullets:[], xpBlocks, tick:0, status:'playing', round:1, scores:[0,0], winner:null, roundOverAt:null };
 }
 
 const BOT_NAMES = ['Zephyr','Orion','Nova','Vega','Axle','Kira','Rho','Bolt','Hex','Pix'];
@@ -166,6 +202,20 @@ function stepShip(ship, inp, now) {
   if (ship.x > WORLD_W-SHIP_RADIUS) { ship.x = WORLD_W-SHIP_RADIUS; ship.vx = -Math.abs(ship.vx)*0.5; }
   if (ship.y < SHIP_RADIUS)         { ship.y = SHIP_RADIUS;         ship.vy =  Math.abs(ship.vy)*0.5; }
   if (ship.y > WORLD_H-SHIP_RADIUS) { ship.y = WORLD_H-SHIP_RADIUS; ship.vy = -Math.abs(ship.vy)*0.5; }
+
+  // Asteroid bounce
+  for (const ast of ASTEROIDS) {
+    const ax = ship.x - ast.x, ay = ship.y - ast.y;
+    const d = Math.hypot(ax, ay);
+    const minD = SHIP_RADIUS + ast.r;
+    if (d > 0 && d < minD) {
+      const nx = ax / d, ny = ay / d;
+      ship.x = ast.x + nx * minD;
+      ship.y = ast.y + ny * minD;
+      const dot = ship.vx * nx + ship.vy * ny;
+      if (dot < 0) { ship.vx -= 1.5 * dot * nx; ship.vy -= 1.5 * dot * ny; }
+    }
+  }
 }
 
 function tryFire(ship, bullets, tick, now) {
@@ -208,6 +258,12 @@ function resolveCollisions(state, room, now) {
           const killer = state.ships[b.ownerIndex];
           handleDeath(target, killer, state, room, now);
         }
+      }
+    }
+    // vs asteroids
+    for (const ast of ASTEROIDS) {
+      if (!remove.has(b.id) && Math.hypot(b.x - ast.x, b.y - ast.y) < ast.r + BULLET_RADIUS) {
+        remove.add(b.id);
       }
     }
     // vs xp blocks
@@ -372,8 +428,12 @@ function broadcast(room) {
     lastBoost:s.lastBoost, respawnAt:s.respawnAt,
     ss: { boostCd:s.ss.boostCd, health:s.ss.health },
   }));
-  const payload = { ships, bullets:gs.bullets, xpBlocks:gs.xpBlocks, tick:gs.tick };
-  for (const p of room.players) io.to(p.id).emit('game_tick', payload);
+  const payload = {
+    ships, bullets: gs.bullets, xpBlocks: gs.xpBlocks, tick: gs.tick,
+    round: gs.round, scores: gs.scores, status: gs.status,
+    winner: gs.winner, roundOverAt: gs.roundOverAt,
+  };
+  for (const p of room.players) io.to(p.id).emit('game_tick', { gameState: payload });
 }
 
 // ─── GAME LOOP ────────────────────────────────────────────────────────────────
@@ -498,6 +558,7 @@ io.on('connection', socket => {
         upgradeTree: UPGRADE_TREE,
         worldW:      WORLD_W,
         worldH:      WORLD_H,
+        asteroids:   ASTEROIDS,
       });
     }
     startLoop(room);

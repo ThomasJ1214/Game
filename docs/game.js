@@ -6,8 +6,8 @@
 
 const ARENA_W       = 800;
 const ARENA_H       = 600;
-const WORLD_W       = 3200;
-const WORLD_H       = 2400;
+const WORLD_W       = 6400;
+const WORLD_H       = 4800;
 const SHIP_RADIUS   = 16;
 const BULLET_RADIUS = 4;
 const BOOST_CD      = 3500;
@@ -33,6 +33,7 @@ let shakeAmount   = 0;
 let lastInputSend = 0;
 let cameraX       = 0;
 let cameraY       = 0;
+let mapAsteroids  = [];
 
 const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
 
@@ -40,7 +41,7 @@ const keys = { w: false, a: false, s: false, d: false, space: false, shift: fals
 // PUBLIC API  (called by lobby.js)
 // ─────────────────────────────────────────────────────────────
 
-function initGame(sock, initialState, yourIndex) {
+function initGame(sock, initialState, yourIndex, asteroids) {
   _socket     = sock;
   _myIndex    = yourIndex;
   serverState = initialState;
@@ -52,6 +53,18 @@ function initGame(sock, initialState, yourIndex) {
   cameraX     = 0;
   cameraY     = 0;
   generation++;
+
+  // Precompute crater visuals for each asteroid
+  mapAsteroids = (asteroids || []).map(ast => {
+    let s = ((ast.x * 73856093) ^ (ast.y * 19349663)) >>> 0;
+    const lcg = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000; };
+    const craters = Array.from({ length: 2 + (s % 2) }, () => ({
+      angle: lcg() * Math.PI * 2,
+      dist:  lcg() * 0.55,
+      r:     0.15 + lcg() * 0.22,
+    }));
+    return { ...ast, craters };
+  });
   const myGen = generation;
 
   keys.w = keys.a = keys.s = keys.d = keys.space = keys.shift = false;
@@ -266,6 +279,23 @@ function toggleHelp() {
 // RENDERING
 // ─────────────────────────────────────────────────────────────
 
+// World-space nebula zones scattered across the large map
+const WORLD_NEBULAS = [
+  { x:  900, y:  850, r: 700, c: '0,0,150'     },
+  { x: 5500, y:  850, r: 680, c: '0,0,120'     },
+  { x:  900, y: 3950, r: 650, c: '130,60,0'    },
+  { x: 5500, y: 3950, r: 620, c: '80,0,110'    },
+  { x: 3200, y: 2400, r: 800, c: '110,40,90'   },
+  { x: 1700, y: 2400, r: 500, c: '0,0,130'     },
+  { x: 4700, y: 2400, r: 520, c: '0,0,110'     },
+  { x: 3200, y: 1000, r: 600, c: '0,20,140'    },
+  { x: 3200, y: 3800, r: 580, c: '130,80,0'    },
+  { x: 2000, y: 1300, r: 450, c: '60,20,100'   },
+  { x: 4400, y: 1300, r: 430, c: '0,30,110'    },
+  { x: 2000, y: 3500, r: 440, c: '100,50,20'   },
+  { x: 4400, y: 3500, r: 420, c: '40,0,100'    },
+];
+
 // Static nebula patches — created once so positions don't change
 const NEBULAS = [
   { x: 140, y: 180, r: 220, r2: 0.48, g: 0, b: 140 },
@@ -300,6 +330,89 @@ function drawBackground(now) {
   }
   ctx.globalAlpha = 1;
 
+}
+
+function drawWorldDecorations() {
+  for (const n of WORLD_NEBULAS) {
+    const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
+    g.addColorStop(0,   `rgba(${n.c},0.13)`);
+    g.addColorStop(0.5, `rgba(${n.c},0.05)`);
+    g.addColorStop(1,   'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(n.x - n.r, n.y - n.r, n.r * 2, n.r * 2);
+  }
+}
+
+function drawAsteroid(ast) {
+  ctx.save();
+  ctx.translate(ast.x, ast.y);
+
+  // Body
+  ctx.beginPath();
+  ctx.arc(0, 0, ast.r, 0, Math.PI * 2);
+  ctx.fillStyle = '#18130e';
+  ctx.shadowColor = 'rgba(110,85,55,0.55)';
+  ctx.shadowBlur  = 12;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(130,100,65,0.75)';
+  ctx.lineWidth   = 2.5;
+  ctx.shadowBlur  = 0;
+  ctx.stroke();
+
+  // Craters
+  for (const c of ast.craters) {
+    const cx = Math.cos(c.angle) * c.dist * ast.r;
+    const cy = Math.sin(c.angle) * c.dist * ast.r;
+    ctx.beginPath();
+    ctx.arc(cx, cy, c.r * ast.r, 0, Math.PI * 2);
+    ctx.fillStyle   = 'rgba(0,0,0,0.45)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(90,70,50,0.35)';
+    ctx.lineWidth   = 1;
+    ctx.stroke();
+  }
+
+  // Top-left surface highlight
+  const hl = ctx.createRadialGradient(-ast.r * 0.35, -ast.r * 0.35, 0, 0, 0, ast.r);
+  hl.addColorStop(0, 'rgba(105,88,65,0.22)');
+  hl.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.beginPath();
+  ctx.arc(0, 0, ast.r, 0, Math.PI * 2);
+  ctx.fillStyle = hl;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawXpBlock(blk) {
+  ctx.save();
+  ctx.translate(blk.x, blk.y);
+
+  // Outer glow
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, blk.r + 10);
+  g.addColorStop(0, `hsla(${blk.hue},100%,60%,0.22)`);
+  g.addColorStop(1, `hsla(${blk.hue},100%,60%,0)`);
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, blk.r + 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Crystal diamond body
+  ctx.shadowColor = `hsl(${blk.hue},100%,65%)`;
+  ctx.shadowBlur  = 14;
+  ctx.beginPath();
+  ctx.moveTo(0,          -blk.r);
+  ctx.lineTo( blk.r * 0.7, 0);
+  ctx.lineTo(0,           blk.r);
+  ctx.lineTo(-blk.r * 0.7, 0);
+  ctx.closePath();
+  ctx.fillStyle   = `hsla(${blk.hue},100%,25%,0.55)`;
+  ctx.strokeStyle = `hsl(${blk.hue},100%,65%)`;
+  ctx.lineWidth   = 2;
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.restore();
 }
 
 function drawWorldBorder() {
@@ -345,6 +458,9 @@ function render(state, now) {
   ctx.translate(-cameraX, -cameraY);
 
   drawWorldBorder();
+  drawWorldDecorations();
+  for (const ast of mapAsteroids) drawAsteroid(ast);
+  if (state.xpBlocks) for (const blk of state.xpBlocks) drawXpBlock(blk);
   updateDrawShockwaves();
   updateDrawExplosions();
   tickBoostTrail(state);
