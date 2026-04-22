@@ -12,8 +12,8 @@ const io     = new Server(server, { cors: { origin: '*', methods: ['GET','POST']
 app.use(express.static(path.join(__dirname, 'docs')));
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
-const WORLD_W        = 6400;
-const WORLD_H        = 4800;
+const WORLD_W        = 9600;
+const WORLD_H        = 7200;
 const SHIP_RADIUS    = 16;
 const BULLET_RADIUS  = 4;
 const BULLET_LIFE    = 120;      // ticks
@@ -23,7 +23,7 @@ const BOOST_MULT     = 2.4;
 const BOOST_MULT_SPD = 2.2;
 const MAX_PLAYERS    = 15;
 const BOT_FILL       = 15;       // total entities when game starts (humans + bots)
-const XP_BLOCK_COUNT = 90;
+const XP_BLOCK_COUNT = 200;
 const XP_KILL_PLAYER      = 150;
 const XP_KILL_BOT         = 80;
 const XP_BLOCK_RESPAWN_MS = 15000;
@@ -32,7 +32,7 @@ const ANGULAR_DRAG   = 0.72;
 const ANGULAR_MAX    = 0.088;
 
 // Bot AI tuning
-const BOT_WALL_MARGIN = 260;   // px from world edge before steering away
+const BOT_WALL_MARGIN = 390;   // px from world edge before steering away
 const BOT_AST_MARGIN  = 90;    // extra clearance around asteroids
 const BOT_RETREAT_HP  = 0.30;  // flee below this fraction of max HP
 const BOT_HUNT_RANGE  = 1000;  // engage the nearest enemy within this distance
@@ -50,20 +50,31 @@ const ASTEROIDS = (() => {
   const rng = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000; };
   const result = [];
   // [cx, cy, count, spread, rMin, rMax]
+  // All positions/spreads scaled 1.5× to match the 9600×7200 world;
+  // extra clusters added for the larger map area.
   const clusters = [
-    [3200, 2400, 6, 300,  60, 130],   // center
-    [1100,  950, 5, 260,  45, 100],   // NW
-    [5300,  950, 4, 230,  50,  95],   // NE
-    [1000, 3850, 5, 270,  45, 105],   // SW
-    [5300, 3850, 4, 250,  50, 100],   // SE
-    [3200,  900, 3, 210,  40,  85],   // N
-    [3200, 3900, 3, 210,  45,  80],   // S
-    [1000, 2400, 3, 190,  40,  80],   // W
-    [5400, 2400, 3, 190,  40,  80],   // E
-    [2200, 1600, 3, 160,  35,  70],   // NW-inner
-    [4200, 1600, 3, 160,  35,  70],   // NE-inner
-    [2200, 3200, 3, 160,  35,  70],   // SW-inner
-    [4200, 3200, 3, 160,  35,  70],   // SE-inner
+    [4800, 3600, 6, 450,  60, 130],   // center
+    [1650, 1425, 5, 390,  45, 100],   // NW
+    [7950, 1425, 4, 345,  50,  95],   // NE
+    [1500, 5775, 5, 405,  45, 105],   // SW
+    [7950, 5775, 4, 375,  50, 100],   // SE
+    [4800, 1350, 3, 315,  40,  85],   // N
+    [4800, 5850, 3, 315,  45,  80],   // S
+    [1500, 3600, 3, 285,  40,  80],   // W
+    [8100, 3600, 3, 285,  40,  80],   // E
+    [3300, 2400, 3, 240,  35,  70],   // NW-inner
+    [6300, 2400, 3, 240,  35,  70],   // NE-inner
+    [3300, 4800, 3, 240,  35,  70],   // SW-inner
+    [6300, 4800, 3, 240,  35,  70],   // SE-inner
+    // Extra clusters filling the expanded area
+    [4800, 2400, 3, 240,  35,  70],   // N-inner
+    [4800, 4800, 3, 240,  35,  70],   // S-inner
+    [2400, 3600, 3, 240,  35,  70],   // W-inner
+    [7200, 3600, 3, 240,  35,  70],   // E-inner
+    [2200, 1000, 3, 200,  35,  70],   // NNW corner
+    [7400, 1000, 3, 200,  35,  70],   // NNE corner
+    [2200, 6200, 3, 200,  35,  70],   // SSW corner
+    [7400, 6200, 3, 200,  35,  70],   // SSE corner
   ];
   for (const [cx, cy, count, spread, rMin, rMax] of clusters) {
     for (let i = 0; i < count; i++) {
@@ -103,7 +114,7 @@ function makeShip(id, index, name, isBot) {
   const ss = computeShipStats(['root']);
   return {
     id, index, name, isBot,
-    x: rnd(100, WORLD_W-100), y: rnd(100, WORLD_H-100),
+    x: rnd(300, WORLD_W-300), y: rnd(300, WORLD_H-300),
     angle: Math.random() * Math.PI * 2,
     vx:0, vy:0, angularVel:0,
     health: ss.health, alive: true,
@@ -349,8 +360,8 @@ function tryRespawn(ship, now) {
   ship.alive         = true;
   ship.health        = ship.ss.health;
   ship.vx = ship.vy  = ship.angularVel = 0;
-  ship.x             = rnd(100, WORLD_W-100);
-  ship.y             = rnd(100, WORLD_H-100);
+  ship.x             = rnd(300, WORLD_W-300);
+  ship.y             = rnd(300, WORLD_H-300);
   ship.invincible      = true;
   ship.invincibleUntil = now + INVINCIBLE_MS;
   ship.respawnAt     = 0;

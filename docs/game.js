@@ -6,8 +6,8 @@
 
 const ARENA_W       = 800;
 const ARENA_H       = 600;
-const WORLD_W       = 6400;
-const WORLD_H       = 4800;
+const WORLD_W       = 9600;
+const WORLD_H       = 7200;
 const SHIP_RADIUS   = 16;
 const BULLET_RADIUS = 4;
 const BOOST_CD      = 3500;
@@ -300,21 +300,26 @@ function toggleHelp() {
 // RENDERING
 // ─────────────────────────────────────────────────────────────
 
-// World-space nebula zones scattered across the large map
+// World-space nebula zones — positions scaled 1.5× for the 9600×7200 world,
+// with extra patches added for the expanded map area.
 const WORLD_NEBULAS = [
-  { x:  900, y:  850, r: 700, c: '0,0,150'     },
-  { x: 5500, y:  850, r: 680, c: '0,0,120'     },
-  { x:  900, y: 3950, r: 650, c: '130,60,0'    },
-  { x: 5500, y: 3950, r: 620, c: '80,0,110'    },
-  { x: 3200, y: 2400, r: 800, c: '110,40,90'   },
-  { x: 1700, y: 2400, r: 500, c: '0,0,130'     },
-  { x: 4700, y: 2400, r: 520, c: '0,0,110'     },
-  { x: 3200, y: 1000, r: 600, c: '0,20,140'    },
-  { x: 3200, y: 3800, r: 580, c: '130,80,0'    },
-  { x: 2000, y: 1300, r: 450, c: '60,20,100'   },
-  { x: 4400, y: 1300, r: 430, c: '0,30,110'    },
-  { x: 2000, y: 3500, r: 440, c: '100,50,20'   },
-  { x: 4400, y: 3500, r: 420, c: '40,0,100'    },
+  { x: 1350, y: 1275, r: 1050, c: '0,0,150'     },   // NW
+  { x: 8250, y: 1275, r: 1020, c: '0,0,120'     },   // NE
+  { x: 1350, y: 5925, r:  975, c: '130,60,0'    },   // SW
+  { x: 8250, y: 5925, r:  930, c: '80,0,110'    },   // SE
+  { x: 4800, y: 3600, r: 1200, c: '110,40,90'   },   // center
+  { x: 2550, y: 3600, r:  750, c: '0,0,130'     },   // W-mid
+  { x: 7050, y: 3600, r:  780, c: '0,0,110'     },   // E-mid
+  { x: 4800, y: 1500, r:  900, c: '0,20,140'    },   // N-mid
+  { x: 4800, y: 5700, r:  870, c: '130,80,0'    },   // S-mid
+  { x: 3000, y: 1950, r:  675, c: '60,20,100'   },   // NW-inner
+  { x: 6600, y: 1950, r:  645, c: '0,30,110'    },   // NE-inner
+  { x: 3000, y: 5250, r:  660, c: '100,50,20'   },   // SW-inner
+  { x: 6600, y: 5250, r:  630, c: '40,0,100'    },   // SE-inner
+  { x: 1400, y: 3600, r:  580, c: '0,0,120'     },   // W-edge
+  { x: 8200, y: 3600, r:  560, c: '80,0,80'     },   // E-edge
+  { x: 4800, y:  700, r:  500, c: '0,10,130'    },   // N-edge
+  { x: 4800, y: 6500, r:  520, c: '110,70,0'    },   // S-edge
 ];
 
 // Static nebula patches — created once so positions don't change
