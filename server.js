@@ -1,481 +1,536 @@
-const express = require('express');
-const http    = require('http');
-const { Server } = require('socket.io');
-const path    = require('path');
+'use strict';
+require('./docs/upgrades.js');   // sets global.UPGRADE_TREE, computeShipStats, etc.
+
+const express        = require('express');
+const http           = require('http');
+const { Server }     = require('socket.io');
+const path           = require('path');
 
 const app    = express();
 const server = http.createServer(app);
-
-// CORS: allow GitHub Pages (or any origin) to connect via Socket.io
-// When deployed to Railway/Render the frontend lives on a different origin.
-const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
-});
-
-// Serve the frontend files from docs/ (also used by GitHub Pages)
+const io     = new Server(server, { cors: { origin: '*', methods: ['GET','POST'] } });
 app.use(express.static(path.join(__dirname, 'docs')));
 
-// ─────────────────────────────────────────────────────────────
-// CONSTANTS
-// ─────────────────────────────────────────────────────────────
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+const WORLD_W        = 3200;
+const WORLD_H        = 2400;
+const SHIP_RADIUS    = 16;
+const BULLET_RADIUS  = 4;
+const BULLET_LIFE    = 120;      // ticks
+const RESPAWN_MS     = 2000;
+const INVINCIBLE_MS  = 2500;
+const BOOST_MULT     = 2.4;
+const BOOST_MULT_SPD = 2.2;
+const MAX_PLAYERS    = 15;
+const BOT_FILL       = 6;        // total entities when game starts (humans + bots)
+const XP_BLOCK_COUNT = 45;
+const XP_KILL_PLAYER = 150;
+const XP_KILL_BOT    = 80;
+const ANGULAR_ACCEL  = 0.025;
+const ANGULAR_DRAG   = 0.72;
+const ANGULAR_MAX    = 0.088;
 
-const ARENA_W       = 800;
-const ARENA_H       = 600;
-const SHIP_RADIUS   = 16;
-const SHIP_THRUST   = 0.30;
-const SHIP_ROTATE   = 0.07;   // rad / tick (kept for boost; main rotation uses angularVel)
-const SHIP_MAX_SPD  = 6;
-const SHIP_DRAG     = 0.975;
-const ANGULAR_ACCEL = 0.025;  // rad/tick added to angular velocity per tick
-const ANGULAR_DRAG  = 0.72;   // angular friction (lower = snappier stop)
-const ANGULAR_MAX   = 0.088;  // rad/tick cap
-const BULLET_SPEED  = 9;
-const BULLET_RADIUS = 4;
-const BULLET_LIFE   = 90;     // ticks  (~3 s at 30 fps)
-const SHOOT_CD      = 300;    // ms
-const MAX_BULLETS   = 3;      // per player
-const WINS_NEEDED   = 3;      // rounds to win the match
-const RESPAWN_MS    = 1800;   // ms between round-end and next round
-const INVINCIBLE_MS = 2000;   // ms of spawn invincibility
-const BOOST_MULT    = 2.4;    // velocity delta multiplier on boost
-const BOOST_CD      = 3500;   // ms between boosts
+const COLORS = [
+  '#00ffff','#ff00ff','#ffff00','#00ff88','#ff8844',
+  '#8888ff','#ff4488','#44ffaa','#ff6666','#66aaff',
+  '#aaff66','#ffaa44','#cc44ff','#44ffff','#ff44cc',
+];
 
-// ─────────────────────────────────────────────────────────────
-// IN-MEMORY STATE
-// ─────────────────────────────────────────────────────────────
+// ─── IN-MEMORY STATE ──────────────────────────────────────────────────────────
+const rooms      = {};
+const socketRoom = {};
+let   nextBulletId = 1;
+let   nextBlockId  = 1;
 
-const rooms       = {};   // roomCode  → room
-const socketRoom  = {};   // socketId  → roomCode
-
-let nextBulletId = 1;
-
-// ─────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────
-
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
 function genCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code;
-  do {
-    code = Array.from({ length: 4 }, () =>
-      chars[Math.floor(Math.random() * chars.length)]
-    ).join('');
-  } while (rooms[code]);
+  do { code = Array.from({length:4}, () => chars[Math.floor(Math.random()*chars.length)]).join(''); }
+  while (rooms[code]);
   return code;
 }
+function safeName(raw) { return String(raw||'').trim().slice(0,20) || 'Anonymous'; }
+function emptyInput()  { return { w:false, a:false, s:false, d:false, space:false, shift:false }; }
+function rnd(min,max)  { return min + Math.random() * (max - min); }
+function normalAngle(a){ return ((a % (Math.PI*2)) + Math.PI*2) % (Math.PI*2); }
 
-function safeName(raw) {
-  return String(raw || '').trim().slice(0, 20) || 'Anonymous';
-}
-
-function emptyInput() {
-  return { w: false, a: false, s: false, d: false, space: false };
-}
-
-// ─────────────────────────────────────────────────────────────
-// GAME STATE FACTORIES
-// ─────────────────────────────────────────────────────────────
-
-function makeShip(index, name) {
+// ─── SHIP FACTORY ─────────────────────────────────────────────────────────────
+function makeShip(id, index, name, isBot) {
+  const ss = computeShipStats(['root']);
   return {
-    index,
-    name,
-    x:               index === 0 ? 200 : 600,
-    y:               ARENA_H / 2,
-    angle:           index === 0 ? 0 : Math.PI,
-    vx: 0, vy: 0,
-    health:          3,
-    alive:           true,
-    thrustOn:        false,
-    reverseThrustOn: false,
-    boosting:        false,
-    angularVel:      0,
-    lastShot:        0,
-    lastBoost:       0,
-    boostUntil:      0,
-    invincible:      true,
-    invincibleUntil: Date.now() + INVINCIBLE_MS
+    id, index, name, isBot,
+    x: rnd(100, WORLD_W-100), y: rnd(100, WORLD_H-100),
+    angle: Math.random() * Math.PI * 2,
+    vx:0, vy:0, angularVel:0,
+    health: ss.health, alive: true,
+    thrustOn:false, reverseThrustOn:false, boosting:false,
+    lastShot:0, lastBoost:0, boostUntil:0,
+    invincible:true, invincibleUntil: Date.now() + INVINCIBLE_MS,
+    kills:0, deaths:0,
+    xp:0, tier:0,
+    upgradePath: ['root'],
+    pendingUpgrade: false,
+    ss,
+    respawnAt: 0,
+    // bot state
+    _botTarget: null, _botDecision: 0, _botState: 'hunt',
   };
 }
 
-function makeGameState(players) {
+// ─── XP BLOCK FACTORY ─────────────────────────────────────────────────────────
+function makeXpBlock() {
   return {
-    ships:   players.map(p => makeShip(p.index, p.name)),
-    bullets: [],
-    scores:  [0, 0],
-    round:   1,
-    status:  'playing',   // 'playing' | 'round_over' | 'game_over'
-    winner:  null,        // null | 0 | 1
-    tick:    0
+    id:     nextBlockId++,
+    x:      rnd(60, WORLD_W-60),
+    y:      rnd(60, WORLD_H-60),
+    r:      14 + Math.random() * 14,
+    health: 2 + Math.floor(Math.random() * 3),
+    maxHealth: 0,  // set below
+    xp:     30 + Math.floor(Math.random() * 80),
+    hue:    Math.floor(Math.random() * 360),
   };
 }
 
-function respawnShips(state) {
-  const names = state.ships.map(s => s.name);
-  state.ships   = names.map((name, i) => makeShip(i, name));
-  state.bullets = [];
+// ─── GAME STATE FACTORY ───────────────────────────────────────────────────────
+function makeGameState(humanPlayers) {
+  const ships = humanPlayers.map((p,i) => makeShip(p.id, i, p.name, false));
+  const botCount = Math.max(0, BOT_FILL - humanPlayers.length);
+  for (let i = 0; i < botCount; i++) {
+    const idx = ships.length;
+    ships.push(makeShip('bot_'+idx, idx, botName(), true));
+  }
+  const xpBlocks = Array.from({length: XP_BLOCK_COUNT}, () => {
+    const b = makeXpBlock(); b.maxHealth = b.health; return b;
+  });
+  return { ships, bullets:[], xpBlocks, tick:0, status:'playing' };
 }
 
-// ─────────────────────────────────────────────────────────────
-// PHYSICS
-// ─────────────────────────────────────────────────────────────
+const BOT_NAMES = ['Zephyr','Orion','Nova','Vega','Axle','Kira','Rho','Bolt','Hex','Pix'];
+let _botNameIdx = 0;
+function botName() { return BOT_NAMES[_botNameIdx++ % BOT_NAMES.length] + '_bot'; }
 
+// ─── COMPUTE STATS ────────────────────────────────────────────────────────────
+function applyUpgrade(ship, nodeId) {
+  ship.upgradePath.push(nodeId);
+  ship.tier = UPGRADE_TREE[nodeId].tier;
+  ship.ss   = computeShipStats(ship.upgradePath);
+  // Restore full health on tier up
+  ship.health = ship.ss.health;
+  ship.pendingUpgrade = false;
+}
+
+function revertUpgrade(ship) {
+  if (ship.upgradePath.length <= 1) return;   // already at root
+  ship.upgradePath.pop();
+  ship.tier = UPGRADE_TREE[ship.upgradePath[ship.upgradePath.length-1]].tier;
+  ship.ss   = computeShipStats(ship.upgradePath);
+  // Don't restore health on downgrade
+  ship.health = Math.min(ship.health, ship.ss.health);
+}
+
+// ─── PHYSICS ─────────────────────────────────────────────────────────────────
 function stepShip(ship, inp, now) {
-  // Angular momentum — smooth spin-up and spin-down
+  if (!ship.alive) return;
+  const ss = ship.ss;
+
+  // Rotation with angular momentum
   if (inp.a) ship.angularVel -= ANGULAR_ACCEL;
   if (inp.d) ship.angularVel += ANGULAR_ACCEL;
-  ship.angularVel = Math.max(-ANGULAR_MAX, Math.min(ANGULAR_MAX, ship.angularVel));
+  ship.angularVel = Math.max(-ss.rotate, Math.min(ss.rotate, ship.angularVel));
   ship.angularVel *= ANGULAR_DRAG;
   ship.angle += ship.angularVel;
 
-  // Boost (Shift) — short burst, 3.5 s cooldown
-  if (inp.shift && now - ship.lastBoost >= BOOST_CD) {
+  // Boost
+  if (inp.shift && now - ship.lastBoost >= ss.boostCd) {
     ship.lastBoost  = now;
     ship.boostUntil = now + 220;
-    ship.vx += Math.cos(ship.angle) * SHIP_THRUST * BOOST_MULT;
-    ship.vy += Math.sin(ship.angle) * SHIP_THRUST * BOOST_MULT;
+    ship.vx += Math.cos(ship.angle) * ss.thrust * BOOST_MULT;
+    ship.vy += Math.sin(ship.angle) * ss.thrust * BOOST_MULT;
   }
   ship.boosting = now < ship.boostUntil;
 
   ship.thrustOn        = !!inp.w;
   ship.reverseThrustOn = !!inp.s;
-  if (inp.w) {
-    ship.vx += Math.cos(ship.angle) * SHIP_THRUST;
-    ship.vy += Math.sin(ship.angle) * SHIP_THRUST;
-  }
-  if (inp.s) {
-    ship.vx -= Math.cos(ship.angle) * SHIP_THRUST;
-    ship.vy -= Math.sin(ship.angle) * SHIP_THRUST;
-  }
+  if (inp.w) { ship.vx += Math.cos(ship.angle)*ss.thrust; ship.vy += Math.sin(ship.angle)*ss.thrust; }
+  if (inp.s) { ship.vx -= Math.cos(ship.angle)*ss.thrust; ship.vy -= Math.sin(ship.angle)*ss.thrust; }
 
-  const spd    = Math.hypot(ship.vx, ship.vy);
-  const maxSpd = ship.boosting ? SHIP_MAX_SPD * 2.2 : SHIP_MAX_SPD;
-  if (spd > maxSpd) {
-    ship.vx = (ship.vx / spd) * maxSpd;
-    ship.vy = (ship.vy / spd) * maxSpd;
-  }
+  const spd = Math.hypot(ship.vx, ship.vy);
+  const cap = ship.boosting ? ss.maxSpd * BOOST_MULT_SPD : ss.maxSpd;
+  if (spd > cap) { ship.vx = ship.vx/spd*cap; ship.vy = ship.vy/spd*cap; }
+  ship.vx *= ss.drag; ship.vy *= ss.drag;
+  ship.x  += ship.vx; ship.y  += ship.vy;
 
-  ship.vx *= SHIP_DRAG;
-  ship.vy *= SHIP_DRAG;
-  ship.x  += ship.vx;
-  ship.y  += ship.vy;
-
-  // torus wrap
-  ship.x = ((ship.x % ARENA_W) + ARENA_W) % ARENA_W;
-  ship.y = ((ship.y % ARENA_H) + ARENA_H) % ARENA_H;
+  // Hard-wall bounce
+  if (ship.x < SHIP_RADIUS)         { ship.x = SHIP_RADIUS;         ship.vx =  Math.abs(ship.vx)*0.5; }
+  if (ship.x > WORLD_W-SHIP_RADIUS) { ship.x = WORLD_W-SHIP_RADIUS; ship.vx = -Math.abs(ship.vx)*0.5; }
+  if (ship.y < SHIP_RADIUS)         { ship.y = SHIP_RADIUS;         ship.vy =  Math.abs(ship.vy)*0.5; }
+  if (ship.y > WORLD_H-SHIP_RADIUS) { ship.y = WORLD_H-SHIP_RADIUS; ship.vy = -Math.abs(ship.vy)*0.5; }
 }
 
 function tryFire(ship, bullets, tick, now) {
-  if (bullets.filter(b => b.ownerIndex === ship.index).length >= MAX_BULLETS) return;
-  if (now - ship.lastShot < SHOOT_CD) return;
+  const ss = ship.ss;
+  if (bullets.filter(b=>b.ownerIndex===ship.index).length >= ss.maxBullets) return;
+  if (now - ship.lastShot < ss.shootCd) return;
   ship.lastShot = now;
   bullets.push({
-    id:         nextBulletId++,
+    id: nextBulletId++,
     ownerIndex: ship.index,
-    x:  ship.x + Math.cos(ship.angle) * (SHIP_RADIUS + 6),
-    y:  ship.y + Math.sin(ship.angle) * (SHIP_RADIUS + 6),
-    vx: Math.cos(ship.angle) * BULLET_SPEED + ship.vx * 0.4,
-    vy: Math.sin(ship.angle) * BULLET_SPEED + ship.vy * 0.4,
-    born: tick
+    x: ship.x + Math.cos(ship.angle)*(SHIP_RADIUS+6),
+    y: ship.y + Math.sin(ship.angle)*(SHIP_RADIUS+6),
+    vx: Math.cos(ship.angle)*ship.ss.bulletSpd + ship.vx*0.4,
+    vy: Math.sin(ship.angle)*ship.ss.bulletSpd + ship.vy*0.4,
+    dmg: ship.ss.bulletDmg,
+    born: tick,
   });
 }
 
 function stepBullets(state) {
   for (const b of state.bullets) {
-    b.x += b.vx;
-    b.y += b.vy;
-    b.x = ((b.x % ARENA_W) + ARENA_W) % ARENA_W;
-    b.y = ((b.y % ARENA_H) + ARENA_H) % ARENA_H;
+    b.x += b.vx; b.y += b.vy;
+    // Destroy at walls
+    if (b.x<0||b.x>WORLD_W||b.y<0||b.y>WORLD_H) b.born = -9999;
   }
   state.bullets = state.bullets.filter(b => state.tick - b.born < BULLET_LIFE);
 }
 
-function resolveCollisions(state) {
+function resolveCollisions(state, room, now) {
   const remove = new Set();
   for (const b of state.bullets) {
-    const target = state.ships[1 - b.ownerIndex];
-    if (!target.alive || target.invincible) continue;   // skip dead or invincible
-    if (Math.hypot(b.x - target.x, b.y - target.y) < SHIP_RADIUS + BULLET_RADIUS) {
-      target.health--;
-      if (target.health <= 0) target.alive = false;
-      remove.add(b.id);
+    // vs ships
+    for (const target of state.ships) {
+      if (target.index === b.ownerIndex) continue;
+      if (!target.alive || target.invincible) continue;
+      if (Math.hypot(b.x-target.x, b.y-target.y) < SHIP_RADIUS+BULLET_RADIUS) {
+        target.health -= b.dmg;
+        remove.add(b.id);
+        if (target.health <= 0) {
+          const killer = state.ships[b.ownerIndex];
+          handleDeath(target, killer, state, room, now);
+        }
+      }
+    }
+    // vs xp blocks
+    for (const blk of state.xpBlocks) {
+      if (Math.hypot(b.x-blk.x, b.y-blk.y) < blk.r+BULLET_RADIUS) {
+        blk.health--;
+        remove.add(b.id);
+        if (blk.health <= 0) {
+          const shooter = state.ships[b.ownerIndex];
+          if (shooter && shooter.alive) giveXp(shooter, blk.xp);
+          // respawn block
+          const nb = makeXpBlock(); nb.maxHealth = nb.health;
+          Object.assign(blk, nb, {id: blk.id});
+        }
+      }
     }
   }
   state.bullets = state.bullets.filter(b => !remove.has(b.id));
+
+  // Ship-ship elastic collision
+  const ships = state.ships.filter(s=>s.alive);
+  for (let i=0;i<ships.length;i++) for (let j=i+1;j<ships.length;j++) {
+    const a=ships[i], b=ships[j];
+    const dx=b.x-a.x, dy=b.y-a.y, dist=Math.hypot(dx,dy), minD=SHIP_RADIUS*2;
+    if (dist>=minD||dist===0) continue;
+    const nx=dx/dist, ny=dy/dist, dot=(a.vx-b.vx)*nx+(a.vy-b.vy)*ny;
+    if (dot<=0) continue;
+    a.vx-=dot*nx; a.vy-=dot*ny;
+    b.vx+=dot*nx; b.vy+=dot*ny;
+    const push=(minD-dist)/2+0.5;
+    a.x-=nx*push; a.y-=ny*push;
+    b.x+=nx*push; b.y+=ny*push;
+  }
 }
 
-function resolveShipCollision(state) {
-  const [a, b] = state.ships;
-  if (!a.alive || !b.alive) return;
-  const dx   = b.x - a.x;
-  const dy   = b.y - a.y;
-  const dist = Math.hypot(dx, dy);
-  const minD = SHIP_RADIUS * 2;
-  if (dist >= minD || dist === 0) return;
-  const nx  = dx / dist;
-  const ny  = dy / dist;
-  const dot = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
-  if (dot <= 0) return;   // already separating
-  a.vx -= dot * nx;  a.vy -= dot * ny;
-  b.vx += dot * nx;  b.vy += dot * ny;
-  const push = (minD - dist) / 2 + 0.5;
-  a.x -= nx * push;  a.y -= ny * push;
-  b.x += nx * push;  b.y += ny * push;
-}
+function handleDeath(ship, killer, state, room, now) {
+  ship.alive   = false;
+  ship.health  = 0;
+  ship.deaths++;
+  revertUpgrade(ship);
 
-// ─────────────────────────────────────────────────────────────
-// ROUND / MATCH WIN CHECK
-// ─────────────────────────────────────────────────────────────
-
-function checkRound(room) {
-  const state = room.gameState;
-  if (state.status !== 'playing') return;
-
-  const dead = state.ships.filter(s => !s.alive);
-  if (dead.length === 0) return;
-
-  state.status     = 'round_over';
-  state.roundOverAt = Date.now();   // client uses this for countdown display
-
-  if (dead.length === 1) {
-    const winIdx = 1 - dead[0].index;
-    state.scores[winIdx]++;
-    state.winner = winIdx;
-  } else {
-    // simultaneous death — draw, no score
-    state.winner = null;
+  if (killer) {
+    killer.kills++;
+    giveXp(killer, ship.isBot ? XP_KILL_BOT : XP_KILL_PLAYER);
+    io.to(room.roomCode).emit('kill_event', {
+      killerName: killer.name,
+      killerIndex: killer.index,
+      victimName: ship.name,
+      victimIndex: ship.index,
+    });
   }
 
-  // Check for match win
-  if (state.winner !== null && state.scores[state.winner] >= WINS_NEEDED) {
-    state.status = 'game_over';
-    clearInterval(room.gameLoopInterval);
-    room.gameLoopInterval = null;
+  // Respawn after delay
+  ship.respawnAt = now + RESPAWN_MS;
+  if (!ship.isBot) {
+    const p = room.players.find(p=>p.id===ship.id);
+    if (p) io.to(p.id).emit('you_died', { respawnIn: RESPAWN_MS, tier: ship.tier });
+  }
+}
 
-    for (const p of room.players) {
-      io.to(p.id).emit('game_over', {
-        winner:      state.winner,
-        winnerName:  state.ships[state.winner].name,
-        playerNames: state.ships.map(s => s.name),
-        scores:      state.scores,
-        yourIndex:   p.index
-      });
+function giveXp(ship, amount) {
+  ship.xp += amount;
+  const needed = (ship.tier + 1) * XP_PER_TIER;
+  if (ship.tier < 10 && ship.xp >= needed && !ship.pendingUpgrade) {
+    ship.pendingUpgrade = true;
+  }
+}
+
+function tryRespawn(ship, now) {
+  if (ship.alive || ship.respawnAt === 0 || now < ship.respawnAt) return;
+  ship.alive         = true;
+  ship.health        = ship.ss.health;
+  ship.vx = ship.vy  = ship.angularVel = 0;
+  ship.x             = rnd(100, WORLD_W-100);
+  ship.y             = rnd(100, WORLD_H-100);
+  ship.invincible      = true;
+  ship.invincibleUntil = now + INVINCIBLE_MS;
+  ship.respawnAt     = 0;
+  ship.pendingUpgrade = false;
+  if (ship.ss.regenRate > 0) ship.health = ship.ss.health;
+}
+
+// ─── BOT AI ──────────────────────────────────────────────────────────────────
+function botThink(bot, state, now) {
+  if (!bot.alive) return emptyInput();
+
+  // Re-evaluate target every 10 ticks (~330ms)
+  if (state.tick - bot._botDecision >= 10) {
+    bot._botDecision = state.tick;
+
+    // Auto-pick upgrade
+    if (bot.pendingUpgrade) {
+      const node = UPGRADE_TREE[bot.upgradePath[bot.upgradePath.length-1]];
+      if (node && node.next.length > 0) {
+        applyUpgrade(bot, node.next[Math.floor(Math.random()*node.next.length)]);
+      } else {
+        bot.pendingUpgrade = false;
+      }
     }
-    return;
+
+    // Find nearest living enemy
+    let bestDist = Infinity, bestTarget = null;
+    for (const s of state.ships) {
+      if (s.index === bot.index || !s.alive) continue;
+      const d = Math.hypot(s.x-bot.x, s.y-bot.y);
+      if (d < bestDist) { bestDist = d; bestTarget = s; }
+    }
+    // If no enemy within 600, look for nearest XP block
+    if (!bestTarget || bestDist > 800) {
+      let bd2=Infinity, bt2=null;
+      for (const blk of state.xpBlocks) {
+        const d = Math.hypot(blk.x-bot.x, blk.y-bot.y);
+        if (d < bd2) { bd2=d; bt2=blk; }
+      }
+      bot._botTarget = (!bestTarget || bd2 < 300) ? {type:'block',obj:bt2} : {type:'ship',obj:bestTarget};
+    } else {
+      bot._botTarget = {type:'ship', obj:bestTarget};
+    }
   }
 
-  // Schedule next round after respawn delay
-  setTimeout(() => {
-    if (!rooms[room.roomCode]) return;   // room was cleaned up
-    state.round++;
-    state.status = 'playing';
-    state.winner = null;
-    respawnShips(state);
-  }, RESPAWN_MS);
+  const inp = emptyInput();
+  if (!bot._botTarget) return inp;
+
+  const tgt = bot._botTarget.obj;
+  if (!tgt) return inp;
+
+  const dx = tgt.x - bot.x, dy = tgt.y - bot.y;
+  const dist = Math.hypot(dx, dy);
+  const targetAngle = Math.atan2(dy, dx);
+  let diff = normalAngle(targetAngle - bot.angle);
+  if (diff > Math.PI) diff -= Math.PI*2;
+
+  if (diff >  0.08) inp.d = true;
+  if (diff < -0.08) inp.a = true;
+
+  if (bot._botTarget.type === 'ship') {
+    if (dist > 200) inp.w = true;
+    else if (dist < 80) inp.s = true;
+    if (Math.abs(diff) < 0.25) inp.space = true;
+    if (dist > 500 && now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
+  } else {
+    // Collect block
+    if (dist > 40) inp.w = true;
+    if (Math.abs(diff) < 0.3) inp.space = true;
+  }
+
+  return inp;
 }
 
-// ─────────────────────────────────────────────────────────────
-// BROADCAST
-// ─────────────────────────────────────────────────────────────
-
+// ─── BROADCAST ───────────────────────────────────────────────────────────────
 function broadcast(room) {
-  const payload = { gameState: room.gameState };
-  for (const p of room.players) {
-    io.to(p.id).emit('game_tick', payload);
-  }
+  const gs = room.gameState;
+  // Slim down ship data for network
+  const ships = gs.ships.map(s => ({
+    id:s.id, index:s.index, name:s.name, isBot:s.isBot,
+    x:s.x, y:s.y, angle:s.angle, vx:s.vx, vy:s.vy,
+    health:s.health, maxHealth:s.ss.health, alive:s.alive,
+    thrustOn:s.thrustOn, reverseThrustOn:s.reverseThrustOn,
+    boosting:s.boosting, invincible:s.invincible,
+    kills:s.kills, deaths:s.deaths, xp:s.xp, tier:s.tier,
+    upgradePath:s.upgradePath, pendingUpgrade:s.pendingUpgrade,
+    lastBoost:s.lastBoost, respawnAt:s.respawnAt,
+    ss: { boostCd:s.ss.boostCd, health:s.ss.health },
+  }));
+  const payload = { ships, bullets:gs.bullets, xpBlocks:gs.xpBlocks, tick:gs.tick };
+  for (const p of room.players) io.to(p.id).emit('game_tick', payload);
 }
 
-// ─────────────────────────────────────────────────────────────
-// GAME LOOP
-// ─────────────────────────────────────────────────────────────
-
+// ─── GAME LOOP ────────────────────────────────────────────────────────────────
 function startLoop(room) {
   if (room.gameLoopInterval) clearInterval(room.gameLoopInterval);
-
   room.gameLoopInterval = setInterval(() => {
     const state = room.gameState;
     if (!state) return;
-
     state.tick++;
     const now = Date.now();
 
-    if (state.status === 'playing') {
-      // Clear expired invincibility
-      for (const ship of state.ships) {
-        if (ship.invincible && now >= ship.invincibleUntil) ship.invincible = false;
+    for (const ship of state.ships) {
+      // Clear invincibility
+      if (ship.invincible && now >= ship.invincibleUntil) ship.invincible = false;
+      // Try respawn
+      tryRespawn(ship, now);
+      // Regen
+      if (ship.alive && ship.ss.regenRate > 0) {
+        const interval = Math.max(1, Math.floor(300 / ship.ss.regenRate));
+        if (state.tick % interval === 0 && ship.health < ship.ss.health) ship.health++;
       }
-      for (const ship of state.ships) {
-        if (!ship.alive) continue;
-        const inp = room.inputs[ship.index];
-        stepShip(ship, inp, now);
-        if (inp.space) tryFire(ship, state.bullets, state.tick, now);
-      }
-      stepBullets(state);
-      resolveCollisions(state);
-      resolveShipCollision(state);
-      checkRound(room);
     }
 
-    if (state.status !== 'game_over') broadcast(room);
-  }, 33);   // ~30 fps
+    // Compute inputs (human from buffer, bots from AI)
+    const inputs = room.inputs.slice();
+    for (const ship of state.ships) {
+      if (ship.isBot && ship.alive) inputs[ship.index] = botThink(ship, state, now);
+    }
+
+    for (const ship of state.ships) {
+      if (!ship.alive) continue;
+      stepShip(ship, inputs[ship.index], now);
+      if (inputs[ship.index].space) tryFire(ship, state.bullets, state.tick, now);
+    }
+    stepBullets(state);
+    resolveCollisions(state, room, now);
+    broadcast(room);
+  }, 33);
 }
 
-// ─────────────────────────────────────────────────────────────
-// DISCONNECT CLEANUP
-// ─────────────────────────────────────────────────────────────
-
+// ─── SOCKET EVENTS ────────────────────────────────────────────────────────────
 function cleanup(socket) {
   const code = socketRoom[socket.id];
   if (!code) return;
   const room = rooms[code];
   if (!room) return;
 
-  if (room.gameLoopInterval) {
-    clearInterval(room.gameLoopInterval);
-    room.gameLoopInterval = null;
-  }
-
-  const leaver    = room.players.find(p => p.id === socket.id);
-  const remaining = room.players.find(p => p.id !== socket.id);
-
-  if (remaining) {
-    io.to(remaining.id).emit('player_disconnected', {
-      name: leaver ? leaver.name : 'Opponent'
-    });
-    delete socketRoom[remaining.id];
-  }
-
+  const leaver = room.players.find(p=>p.id===socket.id);
+  room.players  = room.players.filter(p=>p.id!==socket.id);
   delete socketRoom[socket.id];
-  delete rooms[code];
-}
 
-// ─────────────────────────────────────────────────────────────
-// SOCKET EVENTS
-// ─────────────────────────────────────────────────────────────
+  if (room.gameState) {
+    // Replace leaver with a bot
+    const ship = room.gameState.ships.find(s=>s.id===socket.id);
+    if (ship) {
+      ship.id    = 'bot_'+ship.index;
+      ship.isBot = true;
+      ship.name  = (leaver ? leaver.name : 'Player') + ' (bot)';
+    }
+    for (const p of room.players) {
+      io.to(p.id).emit('player_left', { name: leaver ? leaver.name : 'Player' });
+    }
+  } else {
+    // Game not started yet, clean up if empty
+    if (room.players.length === 0) {
+      if (room.gameLoopInterval) clearInterval(room.gameLoopInterval);
+      delete rooms[code];
+      return;
+    }
+    const list = room.players.map(p=>({name:p.name, index:p.index}));
+    io.to(code).emit('lobby_update', {players:list});
+  }
+}
 
 io.on('connection', socket => {
 
-  // ── Create lobby ──────────────────────────────────────────
   socket.on('create_lobby', ({ name }) => {
     const code  = genCode();
     const pName = safeName(name);
-
     rooms[code] = {
-      roomCode:          code,
-      players:           [{ id: socket.id, name: pName, index: 0 }],
-      gameStarted:       false,
-      gameState:         null,
-      gameLoopInterval:  null,
-      rematchVotes:      new Set(),
-      inputs:            [emptyInput(), emptyInput()]
+      roomCode: code,
+      players:  [{ id:socket.id, name:pName, index:0 }],
+      gameStarted: false, gameState:null, gameLoopInterval:null,
+      inputs: Array.from({length:MAX_PLAYERS}, emptyInput),
     };
     socketRoom[socket.id] = code;
     socket.join(code);
-
-    socket.emit('lobby_created', {
-      roomCode:    code,
-      playerIndex: 0,
-      players:     [{ name: pName, index: 0 }]
-    });
+    socket.emit('lobby_created', { roomCode:code, playerIndex:0, players:[{name:pName,index:0}] });
   });
 
-  // ── Join lobby ────────────────────────────────────────────
   socket.on('join_lobby', ({ name, roomCode }) => {
-    const code = String(roomCode || '').toUpperCase().trim();
+    const code = String(roomCode||'').toUpperCase().trim();
     const room = rooms[code];
-
-    if (!room)            return socket.emit('lobby_error', { message: `Room "${code}" not found.` });
-    if (room.gameStarted) return socket.emit('lobby_error', { message: 'Game already in progress.' });
-    if (room.players.length >= 2) return socket.emit('lobby_error', { message: 'Room is full.' });
-
+    if (!room)             return socket.emit('lobby_error', {message:`Room "${code}" not found.`});
+    if (room.gameStarted)  return socket.emit('lobby_error', {message:'Game already in progress.'});
+    if (room.players.length >= MAX_PLAYERS) return socket.emit('lobby_error', {message:'Room is full.'});
     const pName = safeName(name);
-    room.players.push({ id: socket.id, name: pName, index: 1 });
+    const idx   = room.players.length;
+    room.players.push({id:socket.id, name:pName, index:idx});
     socketRoom[socket.id] = code;
     socket.join(code);
-
-    const list = room.players.map(p => ({ name: p.name, index: p.index }));
-    socket.emit('lobby_joined', { roomCode: code, playerIndex: 1, players: list });
-    io.to(code).emit('lobby_update', { players: list });
+    const list = room.players.map(p=>({name:p.name,index:p.index}));
+    socket.emit('lobby_joined', {roomCode:code, playerIndex:idx, players:list});
+    io.to(code).emit('lobby_update', {players:list});
   });
 
-  // ── Start game ────────────────────────────────────────────
   socket.on('start_game', () => {
     const code = socketRoom[socket.id];
     const room = code && rooms[code];
-    if (!room || room.gameStarted || room.players.length < 2) return;
-
-    const p = room.players.find(p => p.id === socket.id);
-    if (!p || p.index !== 0) return;   // only host can start
+    if (!room || room.gameStarted) return;
+    const p = room.players.find(p=>p.id===socket.id);
+    if (!p || p.index !== 0) return;
 
     room.gameStarted = true;
     room.gameState   = makeGameState(room.players);
+    // Make sure inputs array covers all ships
+    while (room.inputs.length < room.gameState.ships.length) room.inputs.push(emptyInput());
 
     for (const pl of room.players) {
       io.to(pl.id).emit('game_start', {
-        gameState:  room.gameState,
-        yourIndex:  pl.index
+        yourIndex:   pl.index,
+        upgradeTree: UPGRADE_TREE,
+        worldW:      WORLD_W,
+        worldH:      WORLD_H,
       });
     }
     startLoop(room);
   });
 
-  // ── Player input ──────────────────────────────────────────
   socket.on('player_input', ({ keys }) => {
     const code = socketRoom[socket.id];
     const room = code && rooms[code];
     if (!room || !room.gameStarted) return;
-
-    const p = room.players.find(p => p.id === socket.id);
+    const p = room.players.find(p=>p.id===socket.id);
     if (!p) return;
-
     room.inputs[p.index] = {
-      w:     !!keys.w,
-      a:     !!keys.a,
-      s:     !!keys.s,
-      d:     !!keys.d,
-      space: !!keys.space,
-      shift: !!keys.shift
+      w:!!keys.w, a:!!keys.a, s:!!keys.s, d:!!keys.d,
+      space:!!keys.space, shift:!!keys.shift,
     };
   });
 
-  // ── Rematch vote ──────────────────────────────────────────
-  socket.on('rematch_vote', () => {
+  socket.on('choose_upgrade', ({ nodeId }) => {
     const code = socketRoom[socket.id];
     const room = code && rooms[code];
-    if (!room || !room.gameState || room.gameState.status !== 'game_over') return;
-
-    room.rematchVotes.add(socket.id);
-
-    if (room.rematchVotes.size >= 2) {
-      room.rematchVotes = new Set();
-      room.gameState    = makeGameState(room.players);
-      room.inputs       = [emptyInput(), emptyInput()];
-
-      for (const pl of room.players) {
-        io.to(pl.id).emit('rematch_start', {
-          gameState: room.gameState,
-          yourIndex: pl.index
-        });
-      }
-      startLoop(room);
-    } else {
-      io.to(code).emit('rematch_ready', { votes: room.rematchVotes.size });
-    }
+    if (!room || !room.gameState) return;
+    const p = room.players.find(p=>p.id===socket.id);
+    if (!p) return;
+    const ship = room.gameState.ships.find(s=>s.index===p.index);
+    if (!ship || !ship.pendingUpgrade) return;
+    const currentNode = UPGRADE_TREE[ship.upgradePath[ship.upgradePath.length-1]];
+    if (!currentNode || !currentNode.next.includes(nodeId)) return;
+    applyUpgrade(ship, nodeId);
   });
 
-  // ── Disconnect ────────────────────────────────────────────
   socket.on('leave_room',  () => cleanup(socket));
   socket.on('disconnect',  () => cleanup(socket));
 });
 
-// ─────────────────────────────────────────────────────────────
-// START SERVER
-// ─────────────────────────────────────────────────────────────
-
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n  ★  Pixel Duel  →  http://localhost:${PORT}\n`);
-});
+server.listen(PORT, '0.0.0.0', () => console.log(`\n  ★  Pixel Duel  →  http://localhost:${PORT}\n`));
