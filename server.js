@@ -256,7 +256,8 @@ function resolveCollisions(state, room, now) {
       if (target.index === b.ownerIndex) continue;
       if (!target.alive || target.invincible) continue;
       if (Math.hypot(b.x-target.x, b.y-target.y) < SHIP_RADIUS+BULLET_RADIUS) {
-        target.health -= b.dmg;
+        const resist = (target.ss && target.ss.dmgReduce) || 0;
+        target.health -= Math.max(1, Math.round(b.dmg * (1 - resist)));
         remove.add(b.id);
         if (target.health <= 0) {
           const killer = state.ships[b.ownerIndex];

@@ -107,6 +107,18 @@ function initGame(sock, initialState, yourIndex, asteroids) {
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') keys.shift = true;
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
     if (e.key  === '?') toggleHelp();
+    // Upgrade selection: 1/2 for binary choices, 3 for root branch selection
+    if (serverState && _socket) {
+      const myShip = serverState.ships[_myIndex];
+      if (myShip && myShip.pendingUpgrade && myShip.upgradePath) {
+        const lastId  = myShip.upgradePath[myShip.upgradePath.length - 1];
+        const node    = UPGRADE_TREE && UPGRADE_TREE[lastId];
+        const choices = node ? node.next : [];
+        if (e.key === '1' && choices[0]) _socket.emit('choose_upgrade', { nodeId: choices[0] });
+        if (e.key === '2' && choices[1]) _socket.emit('choose_upgrade', { nodeId: choices[1] });
+        if (e.key === '3' && choices[2]) _socket.emit('choose_upgrade', { nodeId: choices[2] });
+      }
+    }
   };
   window.onkeyup = e => {
     if (e.code === 'KeyW'      || e.code === 'ArrowUp')    keys.w     = false;
@@ -529,19 +541,149 @@ function drawBullet(b) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// DRAW: SHIP
+// DRAW: SHIP  (branch/tier-aware hull + decorations)
 // ─────────────────────────────────────────────────────────────
 
+// Hull polygon vertices for each branch × tier range (local coords, facing right)
+function _shipPts(branch, tier) {
+  switch (branch) {
+    case 'S': // Speed — elongates and narrows progressively
+      if (tier >= 9) return [[ 28,  0], [-20, -5], [-14, 0], [-20,  5]];
+      if (tier >= 7) return [[ 26,  0], [-18, -6], [-12, 0], [-18,  6]];
+      if (tier >= 4) return [[ 23,  0], [-16, -7], [-10, 0], [-16,  7]];
+      if (tier >= 1) return [[ 21,  0], [-14, -8], [ -8, 0], [-14,  8]];
+      break;
+    case 'F': // Firepower — stays short, gets wider (more mass)
+      if (tier >= 9) return [[ 20,  0], [-10,-20], [ -4, 0], [-10, 20]];
+      if (tier >= 7) return [[ 20,  0], [-10,-17], [ -4, 0], [-10, 17]];
+      if (tier >= 4) return [[ 20,  0], [-10,-14], [ -5, 0], [-10, 14]];
+      if (tier >= 1) return [[ 20,  0], [-11,-12], [ -5, 0], [-11, 12]];
+      break;
+    case 'T': // Tank — grows bulkier in all directions
+      if (tier >= 9) return [[ 16,  0], [-16,-15], [-10, 0], [-16, 15]];
+      if (tier >= 7) return [[ 17,  0], [-15,-14], [ -9, 0], [-15, 14]];
+      if (tier >= 4) return [[ 17,  0], [-14,-13], [ -8, 0], [-14, 13]];
+      if (tier >= 1) return [[ 18,  0], [-13,-12], [ -7, 0], [-13, 12]];
+      break;
+  }
+  return [[ 18, 0], [-12,-10], [-6, 0], [-12, 10]]; // default (no branch)
+}
+
+function _hullPath(pts) {
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+}
+
+// Branch-specific decorations drawn inside the ctx.save/translate/rotate block
+function _drawBranchExtras(branch, tier, col, now, shipIdx) {
+  if (tier < 1) return;
+  ctx.save();
+
+  if (branch === 'S') {
+    // Swept wings appear at tier 4, grow with tier
+    if (tier >= 4) {
+      const wLen = 5 + tier * 2;
+      const wY   = tier >= 7 ? 10 : 8;
+      ctx.strokeStyle = col;
+      ctx.lineWidth   = 1.2;
+      ctx.lineCap     = 'round';
+      ctx.shadowColor = col;
+      ctx.shadowBlur  = 7;
+      ctx.globalAlpha = 0.55 + Math.min(0.3, tier * 0.03);
+      // top wing
+      ctx.beginPath(); ctx.moveTo(-6, -wY); ctx.lineTo(-6 - wLen, -wY - 5 - tier); ctx.stroke();
+      // bottom wing
+      ctx.beginPath(); ctx.moveTo(-6,  wY); ctx.lineTo(-6 - wLen,  wY + 5 + tier); ctx.stroke();
+    }
+    // Velocity streaks at tier 7+
+    if (tier >= 7) {
+      ctx.strokeStyle = '#aaddff';
+      ctx.lineWidth   = 0.9;
+      ctx.shadowBlur  = 0;
+      ctx.globalAlpha = 0.18 + 0.08 * Math.sin(now * 0.009 + shipIdx);
+      for (let i = -1; i <= 1; i++) {
+        ctx.beginPath();
+        ctx.moveTo(-14, i * 4);
+        ctx.lineTo(-14 - 8 - tier, i * 4);
+        ctx.stroke();
+      }
+    }
+
+  } else if (branch === 'F') {
+    // Gun barrels appear at tier 3+
+    if (tier >= 3) {
+      const bLen   = 3 + Math.floor(tier / 2.5);
+      const spread = tier >= 7 ? 9 : tier >= 5 ? 6 : 4;
+      ctx.strokeStyle = col;
+      ctx.lineWidth   = tier >= 7 ? 2.2 : 1.8;
+      ctx.lineCap     = 'square';
+      ctx.shadowColor = col;
+      ctx.shadowBlur  = 9;
+      ctx.globalAlpha = 0.72;
+      ctx.beginPath(); ctx.moveTo(10, -spread); ctx.lineTo(10 + bLen, -spread); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(10,  spread); ctx.lineTo(10 + bLen,  spread); ctx.stroke();
+      // Centre barrel at tier 6+
+      if (tier >= 6) {
+        ctx.lineWidth   = 2.5;
+        ctx.globalAlpha = 0.90;
+        ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(14 + bLen + 4, 0); ctx.stroke();
+      }
+    }
+
+  } else if (branch === 'T') {
+    // Armour plating lines at tier 3+
+    if (tier >= 3) {
+      const pts = _shipPts('T', tier);
+      ctx.strokeStyle = col;
+      ctx.lineWidth   = 1.5;
+      ctx.shadowBlur  = 0;
+      ctx.globalAlpha = 0.30;
+      const sy = pts[1][1]; // topY of hull
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0] - 5,  sy * 0.4);
+      ctx.lineTo(pts[1][0] + 3,  sy * 0.7);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0] - 5, -sy * 0.4);
+      ctx.lineTo(pts[1][0] + 3, -sy * 0.7);
+      ctx.stroke();
+    }
+    // Passive shield ring at tier 5+
+    if (tier >= 5) {
+      const sr    = 22 + tier * 1.5;
+      const pulse = 0.07 + 0.04 * Math.sin(now * 0.004 + shipIdx * 1.3);
+      ctx.globalAlpha = pulse;
+      ctx.strokeStyle = col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur  = 16;
+      ctx.lineWidth   = 1.4;
+      ctx.beginPath();
+      ctx.arc(0, 0, sr, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 0;
+  ctx.restore();
+}
+
 function drawShip(ship, now) {
-  const col  = COLORS[ship.index % COLORS.length];
-  const rgba = colorRgba(ship.index);
-  const isMe = ship.index === _myIndex;
+  const col    = COLORS[ship.index % COLORS.length];
+  const rgba   = colorRgba(ship.index);
+  const isMe   = ship.index === _myIndex;
+  const branch = window.getShipBranch ? window.getShipBranch(ship.upgradePath) : null;
+  const tier   = ship.tier || 0;
+  const pts    = _shipPts(branch, tier);
+  // Rear-most X for thrust/engine anchor
+  const rearX  = pts.reduce((m, p) => Math.min(m, p[0]), 0);
 
   ctx.save();
   ctx.translate(ship.x, ship.y);
   ctx.rotate(ship.angle);
 
-  // Invincibility shield ring (replaces blinking)
+  // Invincibility shield ring
   if (ship.invincible) {
     const pulse = 0.35 + 0.28 * Math.sin(now * 0.013);
     ctx.globalAlpha = pulse;
@@ -557,58 +699,60 @@ function drawShip(ship, now) {
   }
 
   // Persistent engine glow at rear
-  const eg = ctx.createRadialGradient(-8, 0, 0, -8, 0, 9);
+  const eg = ctx.createRadialGradient(rearX + 4, 0, 0, rearX + 4, 0, 9);
   eg.addColorStop(0, rgba(0.45));
   eg.addColorStop(1, rgba(0));
-  ctx.fillStyle   = eg;
-  ctx.shadowBlur  = 0;
+  ctx.fillStyle = eg;
+  ctx.shadowBlur = 0;
   ctx.beginPath();
-  ctx.arc(-8, 0, 9, 0, Math.PI * 2);
+  ctx.arc(rearX + 4, 0, 9, 0, Math.PI * 2);
   ctx.fill();
 
-  // Forward thrust flame (rear)
+  // Forward thrust flame
   if (ship.thrustOn || ship.boosting) {
     const boost   = ship.boosting;
     const flicker = boost ? (20 + Math.random() * 22) : (9 + Math.random() * 11);
     const spread  = boost ? 11 : 7;
     const g       = boost ? (180 + (Math.random() * 75) | 0) : (90 + (Math.random() * 130) | 0);
-    const grad    = ctx.createLinearGradient(-SHIP_RADIUS, 0, -SHIP_RADIUS - flicker, 0);
-    grad.addColorStop(0, boost ? `rgba(255,255,${g},1)` : `rgba(255,${g},0,0.95)`);
+    const grad    = ctx.createLinearGradient(rearX, 0, rearX - flicker, 0);
+    grad.addColorStop(0,   boost ? `rgba(255,255,${g},1)` : `rgba(255,${g},0,0.95)`);
     grad.addColorStop(0.4, boost ? 'rgba(255,180,20,0.6)' : 'rgba(255,100,0,0.5)');
-    grad.addColorStop(1, 'rgba(255,40,0,0)');
+    grad.addColorStop(1,   'rgba(255,40,0,0)');
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.moveTo(-11, -spread);
-    ctx.lineTo(-SHIP_RADIUS - flicker, 0);
-    ctx.lineTo(-11,  spread);
+    ctx.moveTo(rearX + 4, -spread);
+    ctx.lineTo(rearX - flicker, 0);
+    ctx.lineTo(rearX + 4,  spread);
     ctx.fill();
   }
 
   // Reverse thrust flame (nose)
   if (ship.reverseThrustOn) {
+    const noseX  = pts[0][0];
     const flicker = 7 + Math.random() * 9;
-    const grad    = ctx.createLinearGradient(18, 0, 18 + flicker, 0);
+    const grad    = ctx.createLinearGradient(noseX - 2, 0, noseX + 2 + flicker, 0);
     grad.addColorStop(0, 'rgba(80,160,255,0.9)');
     grad.addColorStop(1, 'rgba(0,80,255,0)');
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.moveTo(14, -5);
-    ctx.lineTo(18 + flicker, 0);
-    ctx.lineTo(14,  5);
+    ctx.moveTo(noseX - 4, -5);
+    ctx.lineTo(noseX + flicker, 0);
+    ctx.lineTo(noseX - 4,  5);
     ctx.fill();
   }
 
-  // Ship body — filled with translucent color
+  // Ship body fill
   ctx.beginPath();
-  ctx.moveTo( 18,   0);
-  ctx.lineTo(-12, -10);
-  ctx.lineTo( -6,   0);
-  ctx.lineTo(-12,  10);
-  ctx.closePath();
-  ctx.fillStyle   = rgba(0.12);
+  _hullPath(pts);
+  ctx.fillStyle = rgba(branch === 'T' ? 0.18 : 0.12);
   ctx.fill();
 
-  // Ship outline with glow
+  // Branch-specific extras (wings, guns, armour, shield)
+  _drawBranchExtras(branch, tier, col, now, ship.index);
+
+  // Hull outline
+  ctx.beginPath();
+  _hullPath(pts);
   ctx.strokeStyle = col;
   ctx.lineWidth   = isMe ? 2.5 : 1.8;
   ctx.shadowColor = col;
@@ -616,11 +760,12 @@ function drawShip(ship, now) {
   ctx.stroke();
 
   // Cockpit dot near nose
+  const cockpitX = pts[0][0] - 9;
   ctx.shadowBlur  = 10;
   ctx.fillStyle   = col;
   ctx.globalAlpha = 0.85;
   ctx.beginPath();
-  ctx.arc(9, 0, 2.8, 0, Math.PI * 2);
+  ctx.arc(cockpitX, 0, 2.8, 0, Math.PI * 2);
   ctx.fill();
   ctx.globalAlpha = 1;
 
@@ -658,6 +803,9 @@ function drawHUD(state, now) {
     drawBoostBar(12, 50, myShip.lastBoost || 0, col, 'left');
   }
 
+  // Upgrade panel (shown when pendingUpgrade, takes full focus)
+  drawUpgradePanel(state);
+
   // Respawn countdown overlay
   if (myShip && !myShip.alive && myShip.respawnAt > 0) {
     const remaining = Math.max(0, (myShip.respawnAt - Date.now()) / 1000);
@@ -685,6 +833,132 @@ function drawHUD(state, now) {
   ctx.fillStyle   = '#2c2c50';
   ctx.textAlign   = 'right';
   ctx.fillText('[?] controls', ARENA_W - 8, ARENA_H - 8);
+
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────
+// DRAW: UPGRADE PANEL
+// ─────────────────────────────────────────────────────────────
+
+const BRANCH_LABELS = { S: 'SPEED',  F: 'FIREPOWER', T: 'TANK' };
+const BRANCH_DESCS  = {
+  S: 'Movement speed & dash',
+  F: 'Bullet damage & fire rate',
+  T: 'Health, shields & resistance',
+};
+
+function drawUpgradePanel(state) {
+  const myShip = state.ships[_myIndex];
+  if (!myShip || !myShip.pendingUpgrade || !myShip.upgradePath) return;
+
+  const tree    = window.UPGRADE_TREE;
+  if (!tree) return;
+  const lastId  = myShip.upgradePath[myShip.upgradePath.length - 1];
+  const node    = tree[lastId];
+  if (!node || !node.next.length) return;
+  const choices = node.next;
+
+  const isRoot  = lastId === 'root'; // branch selection
+  const cardW   = 160;
+  const cardH   = isRoot ? 80 : 68;
+  const gap     = 14;
+  const total   = cardW * choices.length + gap * (choices.length - 1);
+  const startX  = (ARENA_W - total) / 2;
+  const panelY  = ARENA_H / 2 - cardH / 2;
+
+  ctx.save();
+
+  // Dimmed background
+  ctx.fillStyle = 'rgba(0,0,20,0.55)';
+  ctx.fillRect(0, 0, ARENA_W, ARENA_H);
+
+  // Header
+  ctx.textAlign   = 'center';
+  ctx.font        = 'bold 13px monospace';
+  ctx.fillStyle   = '#ffffff';
+  ctx.shadowColor = '#ffffff';
+  ctx.shadowBlur  = 8;
+  const headerY   = panelY - 20;
+  ctx.fillText(isRoot ? 'CHOOSE YOUR BRANCH' : `TIER ${myShip.tier + 1} UPGRADE`, ARENA_W / 2, headerY);
+  ctx.font      = '10px monospace';
+  ctx.fillStyle = '#6666aa';
+  ctx.shadowBlur = 0;
+  ctx.fillText('Press 1 / 2' + (choices.length > 2 ? ' / 3' : ''), ARENA_W / 2, headerY + 14);
+
+  choices.forEach((id, idx) => {
+    const cn   = tree[id];
+    if (!cn) return;
+    const cx   = startX + idx * (cardW + gap);
+    const col  = id[0] === 'S' ? '#00ffdd' : id[0] === 'F' ? '#ff8844' : '#88aaff';
+
+    // Card background
+    ctx.fillStyle   = 'rgba(8,8,28,0.88)';
+    ctx.strokeStyle = col;
+    ctx.lineWidth   = 1.5;
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = 10;
+    const r = 6;
+    ctx.beginPath();
+    ctx.moveTo(cx + r, panelY);
+    ctx.lineTo(cx + cardW - r, panelY);
+    ctx.arcTo(cx + cardW, panelY, cx + cardW, panelY + r, r);
+    ctx.lineTo(cx + cardW, panelY + cardH - r);
+    ctx.arcTo(cx + cardW, panelY + cardH, cx + cardW - r, panelY + cardH, r);
+    ctx.lineTo(cx + r, panelY + cardH);
+    ctx.arcTo(cx, panelY + cardH, cx, panelY + cardH - r, r);
+    ctx.lineTo(cx, panelY + r);
+    ctx.arcTo(cx, panelY, cx + r, panelY, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Key hint badge
+    ctx.fillStyle = col;
+    ctx.font      = 'bold 11px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`[${idx + 1}]`, cx + 8, panelY + 16);
+
+    // Upgrade name
+    ctx.font      = 'bold 11px monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.fillText(cn.name, cx + cardW / 2, panelY + 16);
+
+    // Branch label for root choice
+    if (isRoot) {
+      ctx.font      = '10px monospace';
+      ctx.fillStyle = col;
+      ctx.fillText(BRANCH_LABELS[id[0]] || '', cx + cardW / 2, panelY + 31);
+      ctx.fillStyle = '#5555aa';
+      ctx.fillText(BRANCH_DESCS[id[0]] || '', cx + cardW / 2, panelY + 46);
+    }
+
+    // Stats summary
+    const stats = cn.stats;
+    const lines = [];
+    if (stats.thrust)     lines.push(`+Thrust`);
+    if (stats.maxSpd)     lines.push(`+Speed`);
+    if (stats.boostCd)    lines.push(`+Dash`);
+    if (stats.rotate)     lines.push(`+Turn`);
+    if (stats.drag)       lines.push(`+Drift`);
+    if (stats.shootCd)    lines.push(`+Fire Rate`);
+    if (stats.bulletDmg)  lines.push(`+Dmg ×${stats.bulletDmg}`);
+    if (stats.maxBullets) lines.push(`+Bullets`);
+    if (stats.bulletSpd)  lines.push(`+Bullet Spd`);
+    if (stats.health)     lines.push(`+${stats.health} HP`);
+    if (stats.regenRate)  lines.push(`+Regen`);
+    if (stats.dmgReduce)  lines.push(`+Resistance`);
+
+    ctx.font      = '9px monospace';
+    ctx.fillStyle = '#8888cc';
+    ctx.textAlign = 'center';
+    const topLine = isRoot ? panelY + 60 : panelY + 30;
+    lines.slice(0, 3).forEach((l, li) => {
+      ctx.fillText(l, cx + cardW / 2, topLine + li * 13);
+    });
+  });
 
   ctx.restore();
 }
