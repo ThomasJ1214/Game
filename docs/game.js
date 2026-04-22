@@ -11,8 +11,17 @@ const WORLD_H       = 4800;
 const SHIP_RADIUS   = 16;
 const BULLET_RADIUS = 4;
 const BOOST_CD      = 3500;
-const COLORS        = ['#00ffff', '#ff00ff'];
-const COLORS_RGBA   = [(a) => `rgba(0,255,255,${a})`, (a) => `rgba(255,0,255,${a})`];
+const COLORS = [
+  '#00ffff','#ff00ff','#ffff00','#00ff88','#ff8844',
+  '#8888ff','#ff4488','#44ffaa','#ff6666','#66aaff',
+  '#aaff66','#ffaa44','#cc44ff','#44ffff','#ff44cc',
+];
+
+function colorRgba(index) {
+  const h = COLORS[index % COLORS.length];
+  const r = parseInt(h.slice(1,3),16), g = parseInt(h.slice(3,5),16), b = parseInt(h.slice(5,7),16);
+  return (a) => `rgba(${r},${g},${b},${a})`;
+}
 
 // ─────────────────────────────────────────────────────────────
 // MODULE STATE
@@ -524,8 +533,8 @@ function drawBullet(b) {
 // ─────────────────────────────────────────────────────────────
 
 function drawShip(ship, now) {
-  const col  = COLORS[ship.index];
-  const rgba = COLORS_RGBA[ship.index];
+  const col  = COLORS[ship.index % COLORS.length];
+  const rgba = colorRgba(ship.index);
   const isMe = ship.index === _myIndex;
 
   ctx.save();
@@ -633,66 +642,26 @@ function drawShip(ship, now) {
 // ─────────────────────────────────────────────────────────────
 
 function drawHUD(state, now) {
-  const s0 = state.ships[0];
-  const s1 = state.ships[1];
-
   ctx.save();
 
-  // P1 — top left
-  ctx.font        = 'bold 12px monospace';
-  ctx.fillStyle   = COLORS[0];
-  ctx.shadowColor = COLORS[0];
-  ctx.shadowBlur  = 5;
-  ctx.textAlign   = 'left';
-  ctx.fillText(s0.name, 12, 22);
-  drawHearts(12, 36, s0.health, COLORS[0], 'left');
-  drawBoostBar(12, 50, s0.lastBoost || 0, COLORS[0], 'left');
-
-  // P2 — top right
-  ctx.fillStyle   = COLORS[1];
-  ctx.shadowColor = COLORS[1];
-  ctx.textAlign   = 'right';
-  ctx.fillText(s1.name, ARENA_W - 12, 22);
-  drawHearts(ARENA_W - 12, 36, s1.health, COLORS[1], 'right');
-  drawBoostBar(ARENA_W - 12, 50, s1.lastBoost || 0, COLORS[1], 'right');
-
-  // Round + score — top centre
-  ctx.shadowBlur  = 0;
-  ctx.textAlign   = 'center';
-  ctx.fillStyle   = '#8888b8';
-  ctx.font        = '10px monospace';
-  ctx.fillText(`ROUND ${state.round}`, ARENA_W / 2, 18);
-  ctx.font        = 'bold 20px monospace';
-  ctx.fillStyle   = '#ffffff';
-  ctx.fillText(`${state.scores[0]}  –  ${state.scores[1]}`, ARENA_W / 2, 38);
-
-  // Round-over banner
-  if (state.status === 'round_over') {
-    const wCol = state.winner !== null ? COLORS[state.winner] : '#ffff00';
-    const text = state.winner !== null
-      ? `${state.ships[state.winner].name} wins the round!`
-      : 'DRAW!';
-
-    ctx.font        = 'bold 26px monospace';
-    ctx.fillStyle   = wCol;
-    ctx.shadowColor = wCol;
-    ctx.shadowBlur  = 22;
-    ctx.textAlign   = 'center';
-    ctx.fillText(text, ARENA_W / 2, ARENA_H / 2 - 18);
-
-    if (state.roundOverAt) {
-      const secs = Math.max(0, Math.ceil((state.roundOverAt + 1800 - Date.now()) / 1000));
-      ctx.font        = '14px monospace';
-      ctx.shadowBlur  = 8;
-      ctx.fillStyle   = '#aaaacc';
-      ctx.shadowColor = '#aaaacc';
-      ctx.fillText(
-        secs > 0 ? `Next round in ${secs}…` : 'Get ready!',
-        ARENA_W / 2, ARENA_H / 2 + 16
-      );
-    }
+  // Local player stats — top left
+  const myShip = state.ships[_myIndex];
+  if (myShip) {
+    const col = COLORS[_myIndex % COLORS.length];
+    ctx.font        = 'bold 12px monospace';
+    ctx.fillStyle   = col;
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = 5;
+    ctx.textAlign   = 'left';
+    ctx.fillText(myShip.name + ' ◄', 12, 22);
+    drawHearts(12, 36, myShip.health, col, 'left');
+    drawBoostBar(12, 50, myShip.lastBoost || 0, col, 'left');
   }
 
+  // Leaderboard — top right
+  drawLeaderboard(state);
+
+  // Controls hint — bottom right
   ctx.shadowBlur  = 0;
   ctx.font        = '10px monospace';
   ctx.fillStyle   = '#2c2c50';
@@ -700,6 +669,31 @@ function drawHUD(state, now) {
   ctx.fillText('[?] controls', ARENA_W - 8, ARENA_H - 8);
 
   ctx.restore();
+}
+
+function drawLeaderboard(state) {
+  const sorted = [...state.ships].sort((a, b) => b.kills - a.kills);
+  const x = ARENA_W - 12;
+  let y = 22;
+
+  ctx.font      = 'bold 10px monospace';
+  ctx.fillStyle = '#3a3a6a';
+  ctx.shadowBlur = 0;
+  ctx.textAlign = 'right';
+  ctx.fillText('KILLS', x, y);
+  y += 14;
+
+  for (const ship of sorted) {
+    const col  = COLORS[ship.index % COLORS.length];
+    const isMe = ship.index === _myIndex;
+    ctx.font        = isMe ? 'bold 10px monospace' : '10px monospace';
+    ctx.fillStyle   = ship.isBot ? '#3a3a5a' : col;
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = isMe ? 5 : 0;
+    ctx.fillText(`${ship.kills}  ${ship.name}${isMe ? ' ◄' : ''}`, x, y);
+    y += 13;
+  }
+  ctx.shadowBlur = 0;
 }
 
 // ─────────────────────────────────────────────────────────────

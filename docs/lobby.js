@@ -38,13 +38,6 @@ const btnStart     = $('btn-start');
 const btnLobbyBack = $('btn-lobby-back');
 const lobbyStatus  = $('lobby-status');
 
-// Game over elements
-const goWinner    = $('go-winner');
-const goScores    = $('go-scores');
-const btnRematch  = $('btn-rematch');
-const btnGoBack   = $('btn-go-back');
-const rematchWait = $('rematch-wait');
-
 // ─────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────
@@ -263,21 +256,6 @@ btnLobbyBack.addEventListener('click', () => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// GAME OVER ACTIONS
-// ─────────────────────────────────────────────────────────────
-
-btnRematch.addEventListener('click', () => {
-  btnRematch.disabled = true;
-  rematchWait.classList.remove('hidden');
-  socket.emit('rematch_vote');
-});
-
-btnGoBack.addEventListener('click', () => {
-  if (socket) { socket.emit('leave_room'); socket.disconnect(); socket = null; }
-  location.reload();
-});
-
-// ─────────────────────────────────────────────────────────────
 // SOCKET HANDLERS
 // ─────────────────────────────────────────────────────────────
 
@@ -330,45 +308,6 @@ function setupSocketHandlers() {
     myPlayerIndex = yourIndex;
     showScreen('game');
     initGame(socket, gameState, yourIndex, asteroids);
-  });
-
-  socket.on('game_over', ({ winner, winnerName, playerNames, scores }) => {
-    if (typeof stopGame === 'function') stopGame();
-    const cls = winner === 0 ? 'p1-wins' : 'p2-wins';
-    goWinner.textContent = `${winnerName} wins!`;
-    goWinner.className   = `winner-name ${cls}`;
-    goScores.innerHTML   =
-      `<span class="sp1">${playerNames[0]}: ${scores[0]}</span>` +
-      `<span class="sdiv">vs</span>` +
-      `<span class="sp2">${playerNames[1]}: ${scores[1]}</span>`;
-    btnRematch.disabled = false;
-    rematchWait.classList.add('hidden');
-    showScreen('gameover');
-  });
-
-  socket.on('rematch_ready', ({ votes }) => {
-    rematchWait.textContent = `Waiting for opponent… (${votes}/2 ready)`;
-    rematchWait.classList.remove('hidden');
-  });
-
-  socket.on('rematch_start', ({ gameState, yourIndex, asteroids }) => {
-    myPlayerIndex = yourIndex;
-    btnRematch.disabled = false;
-    rematchWait.classList.add('hidden');
-    showScreen('game');
-    initGame(socket, gameState, yourIndex, asteroids);
-  });
-
-  socket.on('player_disconnected', ({ name }) => {
-    if (typeof stopGame === 'function') stopGame();
-    $('disc-msg').textContent = `${name} disconnected.`;
-    const overlay = $('disc-overlay');
-    overlay.classList.remove('hidden');
-    overlay.classList.add('visible');
-    $('btn-disc-back').addEventListener('click', () => {
-      if (socket) { socket.disconnect(); socket = null; }
-      location.reload();
-    }, { once: true });
   });
 
   socket.on('disconnect', (reason) => {

@@ -139,7 +139,7 @@ function makeGameState(humanPlayers) {
   const xpBlocks = Array.from({length: XP_BLOCK_COUNT}, () => {
     const b = makeXpBlock(); b.maxHealth = b.health; return b;
   });
-  return { ships, bullets:[], xpBlocks, tick:0, status:'playing', round:1, scores:[0,0], winner:null, roundOverAt:null };
+  return { ships, bullets:[], xpBlocks, tick:0 };
 }
 
 const BOT_NAMES = ['Zephyr','Orion','Nova','Vega','Axle','Kira','Rho','Bolt','Hex','Pix'];
@@ -428,11 +428,7 @@ function broadcast(room) {
     lastBoost:s.lastBoost, respawnAt:s.respawnAt,
     ss: { boostCd:s.ss.boostCd, health:s.ss.health },
   }));
-  const payload = {
-    ships, bullets: gs.bullets, xpBlocks: gs.xpBlocks, tick: gs.tick,
-    round: gs.round, scores: gs.scores, status: gs.status,
-    winner: gs.winner, roundOverAt: gs.roundOverAt,
-  };
+  const payload = { ships, bullets: gs.bullets, xpBlocks: gs.xpBlocks, tick: gs.tick };
   for (const p of room.players) io.to(p.id).emit('game_tick', { gameState: payload });
 }
 
@@ -496,6 +492,13 @@ function cleanup(socket) {
     for (const p of room.players) {
       io.to(p.id).emit('player_left', { name: leaver ? leaver.name : 'Player' });
     }
+    // Shut down the room 15 s after the last human leaves
+    if (room.players.length === 0 && !room.shutdownTimer) {
+      room.shutdownTimer = setTimeout(() => {
+        clearInterval(room.gameLoopInterval);
+        delete rooms[code];
+      }, 15000);
+    }
   } else {
     // Game not started yet, clean up if empty
     if (room.players.length === 0) {
@@ -517,6 +520,7 @@ io.on('connection', socket => {
       roomCode: code,
       players:  [{ id:socket.id, name:pName, index:0 }],
       gameStarted: false, gameState:null, gameLoopInterval:null,
+      shutdownTimer: null,
       inputs: Array.from({length:MAX_PLAYERS}, emptyInput),
     };
     socketRoom[socket.id] = code;
