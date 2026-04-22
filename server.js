@@ -249,6 +249,7 @@ function resolveCollisions(state, room, now) {
   for (const b of state.bullets) {
     // vs ships
     for (const target of state.ships) {
+      if (remove.has(b.id)) break;
       if (target.index === b.ownerIndex) continue;
       if (!target.alive || target.invincible) continue;
       if (Math.hypot(b.x-target.x, b.y-target.y) < SHIP_RADIUS+BULLET_RADIUS) {
@@ -268,6 +269,7 @@ function resolveCollisions(state, room, now) {
     }
     // vs xp blocks
     for (const blk of state.xpBlocks) {
+      if (remove.has(b.id)) break;
       if (Math.hypot(b.x-blk.x, b.y-blk.y) < blk.r+BULLET_RADIUS) {
         blk.health--;
         remove.add(b.id);
