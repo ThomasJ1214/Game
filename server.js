@@ -309,7 +309,7 @@ function handleDeath(ship, killer, state, room, now) {
   ship.alive   = false;
   ship.health  = 0;
   ship.deaths++;
-  revertUpgrade(ship);
+  if (ship.tier > 1) revertUpgrade(ship);
 
   if (killer) {
     killer.kills++;
@@ -421,9 +421,7 @@ function botThink(bot, state, now) {
 }
 
 // ─── BROADCAST ───────────────────────────────────────────────────────────────
-function broadcast(room) {
-  const gs = room.gameState;
-  // Slim down ship data for network
+function cleanState(gs) {
   const ships = gs.ships.map(s => ({
     id:s.id, index:s.index, name:s.name, isBot:s.isBot,
     x:s.x, y:s.y, angle:s.angle, vx:s.vx, vy:s.vy,
@@ -435,7 +433,11 @@ function broadcast(room) {
     lastBoost:s.lastBoost, respawnAt:s.respawnAt,
     ss: { boostCd:s.ss.boostCd, health:s.ss.health },
   }));
-  const payload = { ships, bullets: gs.bullets, xpBlocks: gs.xpBlocks.filter(b => b.alive), tick: gs.tick };
+  return { ships, bullets: gs.bullets, xpBlocks: gs.xpBlocks.filter(b => b.alive), tick: gs.tick };
+}
+
+function broadcast(room) {
+  const payload = cleanState(room.gameState);
   for (const p of room.players) io.to(p.id).emit('game_tick', { gameState: payload });
 }
 
@@ -574,6 +576,7 @@ io.on('connection', socket => {
     for (const pl of room.players) {
       io.to(pl.id).emit('game_start', {
         yourIndex:   pl.index,
+        gameState:   cleanState(room.gameState),
         upgradeTree: UPGRADE_TREE,
         worldW:      WORLD_W,
         worldH:      WORLD_H,

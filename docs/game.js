@@ -112,7 +112,7 @@ function initGame(sock, initialState, yourIndex, asteroids) {
       const myShip = serverState.ships[_myIndex];
       if (myShip && myShip.pendingUpgrade && myShip.upgradePath) {
         const lastId  = myShip.upgradePath[myShip.upgradePath.length - 1];
-        const node    = UPGRADE_TREE && UPGRADE_TREE[lastId];
+        const node    = window.UPGRADE_TREE && window.UPGRADE_TREE[lastId];
         const choices = node ? node.next : [];
         if (e.key === '1' && choices[0]) _socket.emit('choose_upgrade', { nodeId: choices[0] });
         if (e.key === '2' && choices[1]) _socket.emit('choose_upgrade', { nodeId: choices[1] });
