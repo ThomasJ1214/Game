@@ -22,7 +22,7 @@ const INVINCIBLE_MS  = 2500;
 const BOOST_MULT     = 2.4;
 const BOOST_MULT_SPD = 2.2;
 const MAX_PLAYERS    = 15;
-const BOT_FILL       = 6;        // total entities when game starts (humans + bots)
+const BOT_FILL       = 15;       // total entities when game starts (humans + bots)
 const XP_BLOCK_COUNT = 90;
 const XP_KILL_PLAYER      = 150;
 const XP_KILL_BOT         = 80;
@@ -30,6 +30,12 @@ const XP_BLOCK_RESPAWN_MS = 15000;
 const ANGULAR_ACCEL  = 0.025;
 const ANGULAR_DRAG   = 0.72;
 const ANGULAR_MAX    = 0.088;
+
+// Bot AI tuning
+const BOT_WALL_MARGIN = 260;   // px from world edge before steering away
+const BOT_AST_MARGIN  = 90;    // extra clearance around asteroids
+const BOT_RETREAT_HP  = 0.30;  // flee below this fraction of max HP
+const BOT_HUNT_RANGE  = 1000;  // engage the nearest enemy within this distance
 
 const COLORS = [
   '#00ffff','#ff00ff','#ffff00','#00ff88','#ff8844',
@@ -111,7 +117,7 @@ function makeShip(id, index, name, isBot) {
     ss,
     respawnAt: 0,
     // bot state
-    _botTarget: null, _botDecision: 0, _botState: 'hunt',
+    _botTarget: null, _botDecision: 0, _botState: 'hunt', _wanderPt: null,
   };
 }
 
@@ -356,65 +362,140 @@ function tryRespawn(ship, now) {
 function botThink(bot, state, now) {
   if (!bot.alive) return emptyInput();
 
-  // Re-evaluate target every 10 ticks (~330ms)
-  if (state.tick - bot._botDecision >= 10) {
+  // ── Immediately apply any pending upgrade ─────────────────────────────
+  if (bot.pendingUpgrade) {
+    const node = UPGRADE_TREE[bot.upgradePath[bot.upgradePath.length - 1]];
+    if (node && node.next.length > 0) {
+      // At the root, assign a branch based on bot index; otherwise prefer a/b by personality
+      const mixedBranches = node.next.some(id => id[0] !== node.next[0][0]);
+      let pick;
+      if (mixedBranches) {
+        const branches = ['S', 'F', 'T'];
+        const prefer   = branches[bot.index % 3];
+        pick = node.next.find(id => id[0] === prefer) || node.next[0];
+      } else {
+        const preferA = (bot.index % 2 === 0);
+        pick = preferA
+          ? (node.next.find(id => id.endsWith('a')) || node.next[0])
+          : (node.next.find(id => id.endsWith('b')) || node.next[node.next.length - 1]);
+      }
+      applyUpgrade(bot, pick);
+    } else {
+      bot.pendingUpgrade = false;
+    }
+  }
+
+  // ── Re-evaluate state & target every 12 ticks (~400 ms) ──────────────
+  if (state.tick - bot._botDecision >= 12) {
     bot._botDecision = state.tick;
 
-    // Auto-pick upgrade
-    if (bot.pendingUpgrade) {
-      const node = UPGRADE_TREE[bot.upgradePath[bot.upgradePath.length-1]];
-      if (node && node.next.length > 0) {
-        applyUpgrade(bot, node.next[Math.floor(Math.random()*node.next.length)]);
-      } else {
-        bot.pendingUpgrade = false;
-      }
-    }
+    const hpFrac = bot.health / bot.ss.health;
 
-    // Find nearest living enemy
-    let bestDist = Infinity, bestTarget = null;
+    // Nearest living enemy
+    let nearEnemyDist = Infinity, nearEnemy = null;
     for (const s of state.ships) {
       if (s.index === bot.index || !s.alive) continue;
-      const d = Math.hypot(s.x-bot.x, s.y-bot.y);
-      if (d < bestDist) { bestDist = d; bestTarget = s; }
+      const d = Math.hypot(s.x - bot.x, s.y - bot.y);
+      if (d < nearEnemyDist) { nearEnemyDist = d; nearEnemy = s; }
     }
-    // If no enemy within 600, look for nearest XP block
-    if (!bestTarget || bestDist > 800) {
-      let bd2=Infinity, bt2=null;
-      for (const blk of state.xpBlocks) {
-        if (!blk.alive) continue;
-        const d = Math.hypot(blk.x-bot.x, blk.y-bot.y);
-        if (d < bd2) { bd2=d; bt2=blk; }
-      }
-      bot._botTarget = (!bestTarget || bd2 < 300) ? {type:'block',obj:bt2} : {type:'ship',obj:bestTarget};
+    // Nearest alive XP block
+    let nearBlockDist = Infinity, nearBlock = null;
+    for (const blk of state.xpBlocks) {
+      if (!blk.alive) continue;
+      const d = Math.hypot(blk.x - bot.x, blk.y - bot.y);
+      if (d < nearBlockDist) { nearBlockDist = d; nearBlock = blk; }
+    }
+
+    if (hpFrac <= BOT_RETREAT_HP && nearEnemy) {
+      bot._botState  = 'retreat';
+      bot._botTarget = { type: 'flee', obj: nearEnemy };
+    } else if (nearEnemy && nearEnemyDist <= BOT_HUNT_RANGE) {
+      bot._botState  = 'hunt';
+      bot._botTarget = { type: 'ship', obj: nearEnemy };
+    } else if (nearBlock) {
+      bot._botState  = 'farm';
+      bot._botTarget = { type: 'block', obj: nearBlock };
     } else {
-      bot._botTarget = {type:'ship', obj:bestTarget};
+      // Wander: pick a new waypoint when the old one is reached
+      bot._botState = 'wander';
+      if (!bot._wanderPt ||
+          Math.hypot(bot._wanderPt.x - bot.x, bot._wanderPt.y - bot.y) < 150) {
+        bot._wanderPt = { x: rnd(300, WORLD_W - 300), y: rnd(300, WORLD_H - 300) };
+      }
+      bot._botTarget = { type: 'wander', obj: bot._wanderPt };
     }
   }
 
   const inp = emptyInput();
-  if (!bot._botTarget) return inp;
-
-  const tgt = bot._botTarget.obj;
+  const tgt = bot._botTarget && bot._botTarget.obj;
   if (!tgt) return inp;
 
-  const dx = tgt.x - bot.x, dy = tgt.y - bot.y;
-  const dist = Math.hypot(dx, dy);
-  const targetAngle = Math.atan2(dy, dx);
-  let diff = normalAngle(targetAngle - bot.angle);
-  if (diff > Math.PI) diff -= Math.PI*2;
-
-  if (diff >  0.08) inp.d = true;
-  if (diff < -0.08) inp.a = true;
-
-  if (bot._botTarget.type === 'ship') {
-    if (dist > 200) inp.w = true;
-    else if (dist < 80) inp.s = true;
-    if (Math.abs(diff) < 0.25) inp.space = true;
-    if (dist > 500 && now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
+  // ── Compute aim point based on state ─────────────────────────────────
+  let aimX, aimY;
+  if (bot._botState === 'retreat') {
+    // Project a point in the direction directly away from the threat
+    const ex = tgt.x - bot.x, ey = tgt.y - bot.y;
+    const ed = Math.hypot(ex, ey) || 1;
+    aimX = bot.x - (ex / ed) * 500;
+    aimY = bot.y - (ey / ed) * 500;
+  } else if (bot._botState === 'hunt') {
+    // Lead-shot: predict target position when bullet arrives
+    const dist    = Math.hypot(tgt.x - bot.x, tgt.y - bot.y);
+    const travelT = Math.min(dist / Math.max(bot.ss.bulletSpd, 1), 35);
+    aimX = tgt.x + tgt.vx * travelT;
+    aimY = tgt.y + tgt.vy * travelT;
   } else {
-    // Collect block
-    if (dist > 40) inp.w = true;
-    if (Math.abs(diff) < 0.3) inp.space = true;
+    aimX = tgt.x;
+    aimY = tgt.y;
+  }
+
+  // ── Wall avoidance: nudge aim point away from world edges ─────────────
+  if (bot.x < BOT_WALL_MARGIN)               aimX += (BOT_WALL_MARGIN - bot.x) * 3.5;
+  if (bot.x > WORLD_W - BOT_WALL_MARGIN)     aimX -= (BOT_WALL_MARGIN - (WORLD_W - bot.x)) * 3.5;
+  if (bot.y < BOT_WALL_MARGIN)               aimY += (BOT_WALL_MARGIN - bot.y) * 3.5;
+  if (bot.y > WORLD_H - BOT_WALL_MARGIN)     aimY -= (BOT_WALL_MARGIN - (WORLD_H - bot.y)) * 3.5;
+
+  // ── Asteroid avoidance: perpendicular steering around nearby rocks ─────
+  for (const ast of ASTEROIDS) {
+    const adx   = ast.x - bot.x, ady = ast.y - bot.y;
+    const adist = Math.hypot(adx, ady);
+    const clear = ast.r + SHIP_RADIUS + BOT_AST_MARGIN;
+    if (adist < clear && adist > 0) {
+      // Perpendicular direction — choose side aligned with current velocity
+      const perpX = -ady / adist, perpY = adx / adist;
+      const sign  = (bot.vx * perpX + bot.vy * perpY) >= 0 ? 1 : -1;
+      const str   = (clear - adist) * 5;
+      aimX += perpX * str * sign;
+      aimY += perpY * str * sign;
+    }
+  }
+
+  // ── Steer toward computed aim point ───────────────────────────────────
+  const dx   = aimX - bot.x, dy = aimY - bot.y;
+  const tgtA = Math.atan2(dy, dx);
+  let diff   = normalAngle(tgtA - bot.angle);
+  if (diff > Math.PI) diff -= Math.PI * 2;
+  if (diff >  0.07) inp.d = true;
+  if (diff < -0.07) inp.a = true;
+
+  // ── Throttle / fire / boost per state ────────────────────────────────
+  if (bot._botState === 'retreat') {
+    inp.w = true;
+    if (now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
+
+  } else if (bot._botState === 'hunt') {
+    const rawDist = Math.hypot(tgt.x - bot.x, tgt.y - bot.y);
+    if (rawDist > 300)                         inp.w = true;
+    else if (rawDist < 130)                    inp.s = true;  // reverse if too close
+    if (Math.abs(diff) < 0.18)                 inp.space = true;
+    if (rawDist > 650 && now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
+
+  } else if (bot._botState === 'farm') {
+    if (Math.hypot(tgt.x - bot.x, tgt.y - bot.y) > 60) inp.w = true;
+    if (Math.abs(diff) < 0.22)                 inp.space = true;
+
+  } else { // wander
+    if (Math.hypot(tgt.x - bot.x, tgt.y - bot.y) > 100) inp.w = true;
   }
 
   return inp;
