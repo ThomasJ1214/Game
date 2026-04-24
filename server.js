@@ -31,10 +31,10 @@ const ANGULAR_ACCEL  = 0.025;
 const ANGULAR_DRAG   = 0.72;
 const ANGULAR_MAX    = 0.088;
 const MISSILE_CD     = 5000;
-const MISSILE_DMG    = 4;
-const MISSILE_LIFE   = 280;
-const MISSILE_SPD    = 8;
-const MISSILE_TURN   = 0.09;
+const MISSILE_DMG    = 9999;   // one-hit kill regardless of tier/resistance
+const MISSILE_LIFE   = 400;    // longer life to let prediction play out
+const MISSILE_SPD    = 9;
+const MISSILE_TURN   = 0.13;   // tighter turn for predictive guidance
 
 // Bot AI tuning
 const BOT_WALL_MARGIN = 390;   // px from world edge before steering away
@@ -304,15 +304,43 @@ function stepBullets(state) {
     if (b.homing && b.targetIndex != null) {
       const tgt = state.ships[b.targetIndex];
       if (tgt && tgt.alive) {
-        const dx = tgt.x - b.x, dy = tgt.y - b.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist > 0) {
-          const tx = dx / dist * MISSILE_SPD, ty = dy / dist * MISSILE_SPD;
-          b.vx += (tx - b.vx) * MISSILE_TURN;
-          b.vy += (ty - b.vy) * MISSILE_TURN;
-          const spd = Math.hypot(b.vx, b.vy);
-          if (spd > 0) { b.vx = b.vx / spd * MISSILE_SPD; b.vy = b.vy / spd * MISSILE_SPD; }
+        // ── Predictive intercept: iterative ballistic solution ─────────────
+        // Converges to the point where the missile will meet the target
+        // given target velocity, accounting for curved paths.
+        let t = Math.hypot(tgt.x - b.x, tgt.y - b.y) / MISSILE_SPD;
+        for (let i = 0; i < 5; i++) {
+          t = Math.hypot((tgt.x + tgt.vx * t) - b.x,
+                         (tgt.y + tgt.vy * t) - b.y) / MISSILE_SPD;
         }
+        const ipX = tgt.x + tgt.vx * t;
+        const ipY = tgt.y + tgt.vy * t;
+
+        // ── Steer toward predicted intercept ──────────────────────────────
+        const dDist = Math.hypot(ipX - b.x, ipY - b.y);
+        if (dDist > 0) {
+          const dvx = (ipX - b.x) / dDist * MISSILE_SPD;
+          const dvy = (ipY - b.y) / dDist * MISSILE_SPD;
+          b.vx += (dvx - b.vx) * MISSILE_TURN;
+          b.vy += (dvy - b.vy) * MISSILE_TURN;
+        }
+
+        // ── Asteroid avoidance: perpendicular steering ─────────────────────
+        for (const ast of ASTEROIDS) {
+          const adx = ast.x - b.x, ady = ast.y - b.y;
+          const adist = Math.hypot(adx, ady);
+          const clear = ast.r + BULLET_RADIUS + 40;
+          if (adist < clear && adist > 0) {
+            const perpX = -ady / adist, perpY = adx / adist;
+            const sign  = (b.vx * perpX + b.vy * perpY) >= 0 ? 1 : -1;
+            const str   = (1 - adist / clear) * MISSILE_SPD * 1.8;
+            b.vx += perpX * sign * str;
+            b.vy += perpY * sign * str;
+          }
+        }
+
+        // ── Renormalise to fixed missile speed ─────────────────────────────
+        const spd = Math.hypot(b.vx, b.vy);
+        if (spd > 0) { b.vx = b.vx / spd * MISSILE_SPD; b.vy = b.vy / spd * MISSILE_SPD; }
       }
     }
     b.x += b.vx; b.y += b.vy;
@@ -339,24 +367,28 @@ function resolveCollisions(state, room, now) {
         }
       }
     }
-    // vs asteroids
-    for (const ast of ASTEROIDS) {
-      if (!remove.has(b.id) && Math.hypot(b.x - ast.x, b.y - ast.y) < ast.r + BULLET_RADIUS) {
-        remove.add(b.id);
+    // vs asteroids — missiles steer around them rather than being destroyed
+    if (!b.homing) {
+      for (const ast of ASTEROIDS) {
+        if (!remove.has(b.id) && Math.hypot(b.x - ast.x, b.y - ast.y) < ast.r + BULLET_RADIUS) {
+          remove.add(b.id);
+        }
       }
     }
-    // vs xp blocks
-    for (const blk of state.xpBlocks) {
-      if (remove.has(b.id)) break;
-      if (!blk.alive) continue;
-      if (Math.hypot(b.x-blk.x, b.y-blk.y) < blk.r+BULLET_RADIUS) {
-        blk.health--;
-        remove.add(b.id);
-        if (blk.health <= 0) {
-          const shooter = state.ships[b.ownerIndex];
-          if (shooter && shooter.alive) giveXp(shooter, blk.xp);
-          blk.alive     = false;
-          blk.respawnAt = now + XP_BLOCK_RESPAWN_MS;
+    // vs xp blocks — missiles pass straight through
+    if (!b.homing) {
+      for (const blk of state.xpBlocks) {
+        if (remove.has(b.id)) break;
+        if (!blk.alive) continue;
+        if (Math.hypot(b.x-blk.x, b.y-blk.y) < blk.r+BULLET_RADIUS) {
+          blk.health--;
+          remove.add(b.id);
+          if (blk.health <= 0) {
+            const shooter = state.ships[b.ownerIndex];
+            if (shooter && shooter.alive) giveXp(shooter, blk.xp);
+            blk.alive     = false;
+            blk.respawnAt = now + XP_BLOCK_RESPAWN_MS;
+          }
         }
       }
     }
