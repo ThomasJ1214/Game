@@ -1373,7 +1373,7 @@ function drawHUD(state, now) {
         { key: 'H', label: 'Shockwave',   desc: 'Blast all enemies away at speed',  col: '#ff8800' },
         { key: 'T', label: 'Time Stop',   desc: 'Freeze all enemies for 3s',        col: '#44eeff' },
         { key: 'L', label: 'Death Ray',   desc: 'Instant kill beam straight ahead', col: '#ffffff' },
-        { key: 'C', label: 'Overclock',   desc: '5s: 10× fire, 2.5× speed, invuln',col: '#ffdd00' },
+        { key: 'C', label: 'Overclock',   desc: '5s: 10x fire, 2.5x speed, invuln', col: '#ffdd00' },
       ];
       for (const h of hacks) {
         ctx.font        = 'bold 9px monospace';
