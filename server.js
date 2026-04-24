@@ -217,7 +217,7 @@ function applyUpgrade(ship, nodeId) {
   ship.health = ship.ss.health;
   ship.pendingUpgrade = false;
   const needed = (ship.tier + 1) * XP_PER_TIER;
-  if (ship.tier < 10 && ship.xp >= needed) ship.pendingUpgrade = true;
+  if (ship.tier < 20 && ship.xp >= needed) ship.pendingUpgrade = true;
 }
 
 function revertUpgrade(ship) {
@@ -299,56 +299,67 @@ function tryFire(ship, bullets, tick, now) {
   });
 }
 
+const MISSILE_SPD_MIN  = 3.5;   // starting speed
+const MISSILE_SPD_MAX  = 15.0;  // peak speed after ramp
+const MISSILE_RAMP_TICKS = 180; // ticks to reach full speed
+
 function stepBullets(state) {
   for (const b of state.bullets) {
     if (b.homing && b.targetIndex != null) {
+      // Increment age and compute ramp factor (0→1 over MISSILE_RAMP_TICKS)
+      b.missileAge = (b.missileAge || 0) + 1;
+      const ramp = Math.min(1, b.missileAge / MISSILE_RAMP_TICKS);
+      const effectiveSpd = MISSILE_SPD_MIN + (MISSILE_SPD_MAX - MISSILE_SPD_MIN) * ramp;
+      // Navigation constant ramps 2→5.5 so turning improves as missile speeds up
+      const N = 2 + 3.5 * ramp;
+
       const tgt = state.ships[b.targetIndex];
       if (tgt && tgt.alive) {
         // ── Proportional Navigation guidance ──────────────────────────────
-        const N = 4; // navigation constant
         const dx = tgt.x - b.x, dy = tgt.y - b.y;
         const dist = Math.hypot(dx, dy) || 1;
-        // Line-of-sight angle
         const losAngle = Math.atan2(dy, dx);
-        // LOS rate (change since last frame)
         const prevLos  = b._prevLos != null ? b._prevLos : losAngle;
         let losRate    = losAngle - prevLos;
         if (losRate >  Math.PI) losRate -= Math.PI * 2;
         if (losRate < -Math.PI) losRate += Math.PI * 2;
         b._prevLos = losAngle;
-        // Closing velocity (dot product of relative velocity along LOS)
         const relVx = tgt.vx - b.vx, relVy = tgt.vy - b.vy;
         const closingSpd = -(relVx * dx/dist + relVy * dy/dist);
-        const closingV   = Math.max(Math.abs(closingSpd), MISSILE_SPD * 0.5);
-        // Perpendicular acceleration
+        const closingV   = Math.max(Math.abs(closingSpd), effectiveSpd * 0.5);
         const perpX = -Math.sin(losAngle), perpY = Math.cos(losAngle);
-        const acc   = N * closingV * losRate;
-        b.vx += perpX * acc;
-        b.vy += perpY * acc;
+        b.vx += perpX * N * closingV * losRate;
+        b.vy += perpY * N * closingV * losRate;
 
-        // ── Asteroid avoidance: perpendicular steering ─────────────────────
+        // ── Asteroid avoidance ─────────────────────────────────────────────
         for (const ast of ASTEROIDS) {
           const adx = ast.x - b.x, ady = ast.y - b.y;
           const adist = Math.hypot(adx, ady);
           const clear = ast.r + BULLET_RADIUS + 40;
           if (adist < clear && adist > 0) {
-            const perpX = -ady / adist, perpY = adx / adist;
-            const sign  = (b.vx * perpX + b.vy * perpY) >= 0 ? 1 : -1;
-            const str   = (1 - adist / clear) * MISSILE_SPD * 1.8;
-            b.vx += perpX * sign * str;
-            b.vy += perpY * sign * str;
+            const px = -ady / adist, py = adx / adist;
+            const sign = (b.vx * px + b.vy * py) >= 0 ? 1 : -1;
+            b.vx += px * sign * (1 - adist / clear) * effectiveSpd * 1.8;
+            b.vy += py * sign * (1 - adist / clear) * effectiveSpd * 1.8;
           }
         }
 
-        // ── Renormalise to fixed missile speed ─────────────────────────────
+        // ── Renormalise to ramped speed ────────────────────────────────────
         const spd = Math.hypot(b.vx, b.vy);
-        if (spd > 0) { b.vx = b.vx / spd * MISSILE_SPD; b.vy = b.vy / spd * MISSILE_SPD; }
+        if (spd > 0) { b.vx = b.vx / spd * effectiveSpd; b.vy = b.vy / spd * effectiveSpd; }
+      } else {
+        // Target is dead/gone — keep flying at current speed (no homing)
+        const spd = Math.hypot(b.vx, b.vy) || 1;
+        b.vx = b.vx / spd * effectiveSpd;
+        b.vy = b.vy / spd * effectiveSpd;
       }
     }
     b.x += b.vx; b.y += b.vy;
-    if (b.x<0||b.x>WORLD_W||b.y<0||b.y>WORLD_H) b.born = -9999;
+    // Only kill non-homing bullets when they leave the world
+    if (!b.homing && (b.x < 0 || b.x > WORLD_W || b.y < 0 || b.y > WORLD_H)) b.born = -9999;
   }
-  state.bullets = state.bullets.filter(b => state.tick - b.born < (b.maxLife || BULLET_LIFE));
+  // Homing missiles never expire by age — only removed when they hit their target
+  state.bullets = state.bullets.filter(b => b.homing || state.tick - b.born < (b.maxLife || BULLET_LIFE));
 }
 
 function resolveCollisions(state, room, now) {
@@ -476,7 +487,7 @@ function handleDeath(ship, killer, state, room, now) {
 function giveXp(ship, amount) {
   ship.xp += amount;
   const needed = (ship.tier + 1) * XP_PER_TIER;
-  if (ship.tier < 10 && ship.xp >= needed && !ship.pendingUpgrade) {
+  if (ship.tier < 20 && ship.xp >= needed && !ship.pendingUpgrade) {
     ship.pendingUpgrade = true;
   }
 }
@@ -492,7 +503,7 @@ function tryRespawn(ship, now) {
   ship.invincibleUntil = now + INVINCIBLE_MS;
   ship.respawnAt = 0;
   const neededXp = (ship.tier + 1) * XP_PER_TIER;
-  ship.pendingUpgrade = ship.tier < 10 && ship.xp >= neededXp;
+  ship.pendingUpgrade = ship.tier < 20 && ship.xp >= neededXp;
   if (ship.ss.regenRate > 0) ship.health = ship.ss.health;
 }
 
@@ -749,7 +760,7 @@ function botThinkBeast(bot, state, now) {
 
     // ── State machine ───────────────────────────────────────────────────
     let bState, aimX = bot.x, aimY = bot.y;
-    const wantsXP  = bot.tier < 10 && farmBlk && (targetDist > 900 || target === null);
+    const wantsXP  = bot.tier < 20 && farmBlk && (targetDist > 900 || target === null);
     const critical = hpFrac < p.retreatHp;
     const wounded  = hpFrac < 0.38 && fleePressure > 0.4;
 
@@ -1251,13 +1262,13 @@ io.on('connection', socket => {
       ownerIndex: ship.index,
       x: ship.x + Math.cos(ship.angle) * 22,
       y: ship.y + Math.sin(ship.angle) * 22,
-      vx: Math.cos(ang) * MISSILE_SPD,
-      vy: Math.sin(ang) * MISSILE_SPD,
+      vx: Math.cos(ang) * MISSILE_SPD_MIN,
+      vy: Math.sin(ang) * MISSILE_SPD_MIN,
       dmg: MISSILE_DMG,
       born: room.gameState.tick,
       homing: true,
       targetIndex,
-      maxLife: MISSILE_LIFE,
+      missileAge: 0,
     });
   });
 
@@ -1283,13 +1294,13 @@ io.on('connection', socket => {
         ownerIndex: ship.index,
         x: ship.x + Math.cos(ship.angle) * 22,
         y: ship.y + Math.sin(ship.angle) * 22,
-        vx: Math.cos(ang) * MISSILE_SPD,
-        vy: Math.sin(ang) * MISSILE_SPD,
+        vx: Math.cos(ang) * MISSILE_SPD_MIN,
+        vy: Math.sin(ang) * MISSILE_SPD_MIN,
         dmg: MISSILE_DMG,
         born: room.gameState.tick,
         homing: true,
         targetIndex: tgt.index,
-        maxLife: MISSILE_LIFE,
+        missileAge: 0,
       });
     }
   });

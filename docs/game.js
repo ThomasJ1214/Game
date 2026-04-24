@@ -48,6 +48,7 @@ let _difficulty     = 'medium';
 let _upgradeOpen    = false;
 let _selectedTarget = -1;
 let _isThomas       = false;
+let shipTrails      = {};   // index → [{x,y,spd}] circular history
 
 const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
 
@@ -64,6 +65,7 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
   explosions      = [];
   shockwaves      = [];
   boostTrail      = [];
+  shipTrails      = {};
   shakeAmount     = 0;
   cameraX         = 0;
   cameraY         = 0;
@@ -313,19 +315,64 @@ function updateDrawShockwaves() {
   ctx.restore();
 }
 
+const TRAIL_LEN = 28;
+
+function updateShipTrails(state) {
+  for (const ship of state.ships) {
+    if (!ship.alive) continue;
+    if (!shipTrails[ship.index]) shipTrails[ship.index] = [];
+    const trail = shipTrails[ship.index];
+    trail.push({ x: ship.x, y: ship.y, spd: Math.hypot(ship.vx || 0, ship.vy || 0) });
+    if (trail.length > TRAIL_LEN) trail.shift();
+  }
+}
+
+function drawShipTrails(state) {
+  if (!state) return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const ship of state.ships) {
+    const trail = shipTrails[ship.index];
+    if (!trail || trail.length < 2) continue;
+    const col = COLORS[ship.index % COLORS.length];
+    const r = parseInt(col.slice(1,3),16), g = parseInt(col.slice(3,5),16), b2 = parseInt(col.slice(5,7),16);
+    const n = trail.length;
+    for (let i = 1; i < n; i++) {
+      const a = trail[i - 1], b = trail[i];
+      const frac = i / n;            // 0 = oldest, 1 = newest
+      const alpha = frac * frac * 0.72;
+      const avgSpd = (a.spd + b.spd) * 0.5;
+      const lw = 0.8 + Math.min(avgSpd * 0.22, 3.5);
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = `rgb(${r},${g},${b2})`;
+      ctx.lineWidth   = lw;
+      ctx.shadowColor = col;
+      ctx.shadowBlur  = frac * 8;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 0;
+  ctx.restore();
+}
+
 function tickBoostTrail(state) {
   // Spawn trail particles behind boosting ships
   for (const ship of state.ships) {
     if (!ship.alive || !ship.boosting) continue;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 6; i++) {
       boostTrail.push({
-        x:     ship.x - Math.cos(ship.angle) * (SHIP_RADIUS - 2) + (Math.random() - 0.5) * 5,
-        y:     ship.y - Math.sin(ship.angle) * (SHIP_RADIUS - 2) + (Math.random() - 0.5) * 5,
-        vx:   -Math.cos(ship.angle) * (1.5 + Math.random() * 2),
-        vy:   -Math.sin(ship.angle) * (1.5 + Math.random() * 2),
+        x:     ship.x - Math.cos(ship.angle) * (SHIP_RADIUS - 2) + (Math.random() - 0.5) * 7,
+        y:     ship.y - Math.sin(ship.angle) * (SHIP_RADIUS - 2) + (Math.random() - 0.5) * 7,
+        vx:   -Math.cos(ship.angle) * (2.0 + Math.random() * 3.5),
+        vy:   -Math.sin(ship.angle) * (2.0 + Math.random() * 3.5),
         life:  1.0,
-        decay: 0.055 + Math.random() * 0.04,
-        r:     2.5 + Math.random() * 2,
+        decay: 0.038 + Math.random() * 0.032,
+        r:     3.5 + Math.random() * 4,
         color: COLORS[ship.index]
       });
     }
@@ -337,15 +384,16 @@ function tickBoostTrail(state) {
     p.y    += p.vy;
     p.life -= p.decay;
     if (p.life <= 0) { boostTrail.splice(i, 1); continue; }
-    ctx.globalAlpha = p.life * 0.6;
+    ctx.globalAlpha = p.life * 0.82;
     ctx.fillStyle   = p.color;
     ctx.shadowColor = p.color;
-    ctx.shadowBlur  = 6;
+    ctx.shadowBlur  = 14;
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 0;
   ctx.restore();
 }
 
@@ -576,6 +624,8 @@ function render(state, now) {
   if (state.xpBlocks) for (const blk of state.xpBlocks) drawXpBlock(blk);
   updateDrawShockwaves();
   updateDrawExplosions();
+  updateShipTrails(state);
+  drawShipTrails(state);
   tickBoostTrail(state);
 
   for (const b of state.bullets) b.homing ? drawMissile(b, state) : drawBullet(b);
@@ -1101,7 +1151,7 @@ function drawHUD(state, now) {
     // XP progress bar
     const xpPer    = (window.XP_PER_TIER || 150);
     const xpNeeded = (myShip.tier + 1) * xpPer;
-    const xpFill   = myShip.tier >= 10 ? 1 : Math.min(1, myShip.xp / xpNeeded);
+    const xpFill   = myShip.tier >= 20 ? 1 : Math.min(1, myShip.xp / xpNeeded);
     const barW = 70, barH = 5, bx = 14;
     ctx.shadowBlur  = 0;
     ctx.fillStyle   = '#111128';
@@ -1112,9 +1162,9 @@ function drawHUD(state, now) {
     ctx.fillRect(bx, 82, barW * xpFill, barH);
     ctx.shadowBlur  = 0;
     ctx.font        = '10px monospace';
-    ctx.fillStyle   = myShip.tier >= 10 ? col : '#44446a';
+    ctx.fillStyle   = myShip.tier >= 20 ? col : '#44446a';
     ctx.textAlign   = 'left';
-    const tierLabel = myShip.tier >= 10 ? 'MAX TIER' : `T${myShip.tier}  ${myShip.xp} / ${xpNeeded} XP`;
+    const tierLabel = myShip.tier >= 20 ? 'MAX TIER' : `T${myShip.tier}  ${myShip.xp} / ${xpNeeded} XP`;
     ctx.fillText(tierLabel, 14, 100);
 
     // Difficulty label
@@ -1207,10 +1257,10 @@ function _branchCol(ch) {
   return ch === 'S' ? '#00ffdd' : ch === 'F' ? '#ff8844' : ch === 'T' ? '#88aaff' : ch === 'D' ? '#aaff44' : '#cc44ff';
 }
 function _rarityCol(tier) {
-  return tier >= 10 ? '#ffd700' : tier >= 8 ? '#dd88ff' : tier >= 6 ? '#4499ff' : tier >= 4 ? '#44ff99' : '#aaaacc';
+  return tier >= 20 ? '#ffd700' : tier >= 16 ? '#ff5522' : tier >= 12 ? '#dd88ff' : tier >= 8 ? '#4499ff' : tier >= 4 ? '#44ff99' : '#aaaacc';
 }
 function _rarityLabel(tier) {
-  return tier >= 10 ? 'LEGENDARY' : tier >= 8 ? 'EPIC' : tier >= 6 ? 'RARE' : tier >= 4 ? 'UNCOMMON' : 'COMMON';
+  return tier >= 20 ? 'LEGENDARY' : tier >= 16 ? 'MYTHIC' : tier >= 12 ? 'EPIC' : tier >= 8 ? 'RARE' : tier >= 4 ? 'UNCOMMON' : 'COMMON';
 }
 function _roundRect(x, y, w, h, r) {
   ctx.beginPath();
@@ -1266,7 +1316,7 @@ function drawUpgradePanel(state) {
   const headerY   = panelY - 44;
 
   // Glowing title bar
-  ctx.fillStyle   = `rgba(${tierNum >= 10 ? '40,30,0' : tierNum >= 8 ? '28,0,40' : tierNum >= 6 ? '0,16,40' : '0,28,18'},0.7)`;
+  ctx.fillStyle   = `rgba(${tierNum >= 20 ? '40,30,0' : tierNum >= 16 ? '40,10,0' : tierNum >= 12 ? '28,0,40' : tierNum >= 8 ? '0,16,40' : '0,28,18'},0.7)`;
   _roundRect(ARENA_W / 2 - 220, headerY - 18, 440, 28, 6);
   ctx.fill();
   ctx.strokeStyle = hdrCol; ctx.lineWidth = 1; ctx.shadowColor = hdrCol; ctx.shadowBlur = 16;
@@ -1296,6 +1346,8 @@ function drawUpgradePanel(state) {
   }
 
   // ── Cards ─────────────────────────────────────────────────────────────
+  const curStats = window.computeShipStats ? window.computeShipStats(myShip.upgradePath) : null;
+
   choices.forEach((id, idx) => {
     const cn  = tree[id];
     if (!cn) return;
@@ -1304,6 +1356,7 @@ function drawUpgradePanel(state) {
     const col = _branchCol(bch);
     const rar = _rarityCol(cn.tier);
     const pulse = 0.55 + 0.45 * Math.sin(nowMs * 0.0028 + idx * 1.4);
+    const newStats = (curStats && window.computeShipStats) ? window.computeShipStats([...myShip.upgradePath, id]) : null;
 
     // ── Background gradient ─────────────────────────────────────────────
     const bgMap = { S:'0,20,18', F:'24,8,0', T:'4,8,28', D:'8,24,0', E:'18,0,28' };
@@ -1388,39 +1441,41 @@ function drawUpgradePanel(state) {
     ctx.beginPath(); ctx.moveTo(cx + 8, divY); ctx.lineTo(cx + cardW - 8, divY); ctx.stroke();
     ctx.globalAlpha = 1;
 
-    // ── Stat bars ────────────────────────────────────────────────────────
+    // ── Stat rows (before → after comparison) ────────────────────────────
     const stats = cn.stats;
     const statDefs = [
-      { key:'thrust',     label:'THRUST',    max:0.12, fmt: v=>`+${v.toFixed(2)}` },
-      { key:'maxSpd',     label:'SPEED',     max:4.0,  fmt: v=>`+${v.toFixed(1)}` },
-      { key:'boostCd',    label:'DASH CD',   max:800,  fmt: v=>`-${v}ms` },
-      { key:'rotate',     label:'TURN',      max:0.020,fmt: v=>`+${v.toFixed(3)}` },
-      { key:'drag',       label:'DRIFT',     max:0.010,fmt: v=>`+${v.toFixed(3)}` },
-      { key:'shootCd',    label:'FIRE RATE', max:80,   fmt: v=>`-${v}ms` },
-      { key:'bulletDmg',  label:'DAMAGE',    max:4,    fmt: v=>`+${v}` },
-      { key:'maxBullets', label:'BULLETS',   max:4,    fmt: v=>`+${v}` },
-      { key:'bulletSpd',  label:'PROJ SPD',  max:8,    fmt: v=>`+${v}` },
-      { key:'health',     label:'HEALTH',    max:6,    fmt: v=>`+${v} HP` },
-      { key:'regenRate',  label:'REGEN',     max:6,    fmt: v=>`+${v}/s` },
-      { key:'dmgReduce',  label:'ARMOR',     max:0.20, fmt: v=>`+${Math.round(v*100)}%` },
+      { key:'thrust',     label:'ACCEL',     max:0.12, fmtA: v=>`${v.toFixed(2)}`,  inv:false },
+      { key:'maxSpd',     label:'SPEED',     max:4.0,  fmtA: v=>`${v.toFixed(1)}`,  inv:false },
+      { key:'boostCd',    label:'DASH CD',   max:3500, fmtA: v=>`${v}ms`,            inv:true  },
+      { key:'rotate',     label:'TURN',      max:0.20, fmtA: v=>`${v.toFixed(3)}`,  inv:false },
+      { key:'shootCd',    label:'FIRE CD',   max:300,  fmtA: v=>`${v}ms`,            inv:true  },
+      { key:'bulletDmg',  label:'DAMAGE',    max:20,   fmtA: v=>`${v}`,              inv:false },
+      { key:'maxBullets', label:'BULLETS',   max:15,   fmtA: v=>`${v}`,              inv:false },
+      { key:'bulletSpd',  label:'PROJ SPD',  max:60,   fmtA: v=>`${v}`,              inv:false },
+      { key:'health',     label:'HEALTH',    max:60,   fmtA: v=>`${v}HP`,            inv:false },
+      { key:'regenRate',  label:'REGEN',     max:20,   fmtA: v=>`${v}/s`,            inv:false },
+      { key:'dmgReduce',  label:'ARMOR',     max:0.80, fmtA: v=>`${Math.round(v*100)}%`, inv:false },
+      { key:'drag',       label:'DRIFT',     max:0.998,fmtA: v=>`${v.toFixed(3)}`,  inv:false },
     ];
 
     const rows    = statDefs.filter(d => stats[d.key]);
-    const maxShow = isRoot ? 2 : 5;
+    const maxShow = isRoot ? 2 : 4;
     const barX    = cx + 8;
     const barW    = cardW - 16;
-    const barH    = 5;
-    let   ry      = divY + 11;
+    const barH    = 4;
+    let   ry      = divY + 12;
 
     rows.slice(0, maxShow).forEach(d => {
-      const val  = stats[d.key];
-      const fill = Math.min(1, Math.abs(val) / d.max);
+      const val   = stats[d.key];
+      const cur   = curStats ? curStats[d.key] : null;
+      const next  = newStats ? newStats[d.key] : null;
+      const fill  = Math.min(1, (next != null ? next : Math.abs(val)) / d.max);
 
       // Bar track
       ctx.fillStyle = 'rgba(255,255,255,0.06)';
       ctx.fillRect(barX, ry, barW, barH);
 
-      // Bar fill — gradient from branch to rarity color
+      // Bar fill
       const bfg = ctx.createLinearGradient(barX, 0, barX + barW * fill, 0);
       bfg.addColorStop(0, col); bfg.addColorStop(1, rar);
       ctx.fillStyle = bfg;
@@ -1428,23 +1483,33 @@ function drawUpgradePanel(state) {
       ctx.fillRect(barX, ry, barW * fill, barH);
       ctx.shadowBlur = 0;
 
-      // Nub at end of bar
+      // Nub
       ctx.fillStyle = rar; ctx.shadowColor = rar; ctx.shadowBlur = 6;
       ctx.fillRect(barX + barW * fill - 1, ry - 1, 2, barH + 2);
       ctx.shadowBlur = 0;
 
-      // Labels
+      // Stat label left, before→after right
       ctx.font = '8px monospace'; ctx.textAlign = 'left';
       ctx.fillStyle = '#445577';
       ctx.fillText(d.label, barX, ry - 2);
-      ctx.fillStyle = col; ctx.textAlign = 'right';
-      ctx.fillText(d.fmt(val), cx + cardW - 8, ry - 2);
 
-      ry += 20;
+      if (cur != null && next != null) {
+        const improved = d.inv ? next < cur : next > cur;
+        ctx.fillStyle   = improved ? '#66ff88' : col;
+        ctx.textAlign   = 'right';
+        ctx.font        = '8px monospace';
+        ctx.fillText(`${d.fmtA(cur)} → ${d.fmtA(next)}`, cx + cardW - 8, ry - 2);
+      } else {
+        const dStr = d.inv ? `-${Math.abs(val)}` : `+${val}`;
+        ctx.fillStyle = col; ctx.textAlign = 'right';
+        ctx.fillText(dStr, cx + cardW - 8, ry - 2);
+      }
+
+      ry += 19;
     });
 
     // ── Tier badge (bottom-center) ────────────────────────────────────────
-    const tierBadge = cn.tier >= 10 ? '★ MAX' : `T${cn.tier}`;
+    const tierBadge = cn.tier >= 20 ? '★ MAX' : `T${cn.tier}`;
     ctx.font      = 'bold 9px monospace'; ctx.textAlign = 'center';
     ctx.fillStyle = rar; ctx.shadowColor = rar; ctx.shadowBlur = 8;
     ctx.fillText(tierBadge, cx + cardW / 2, panelY + cardH - 8);
