@@ -43,6 +43,7 @@ let lastInputSend = 0;
 let cameraX       = 0;
 let cameraY       = 0;
 let mapAsteroids  = [];
+let killFeed      = [];
 
 const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
 
@@ -98,6 +99,12 @@ function initGame(sock, initialState, yourIndex, asteroids) {
     checkTransitions();
   });
 
+  _socket.off('kill_event');
+  _socket.on('kill_event', ({ killerName, killerIndex, victimName, victimIndex }) => {
+    killFeed.push({ killerName, killerIndex, victimName, victimIndex, at: Date.now() });
+    if (killFeed.length > 6) killFeed.shift();
+  });
+
   window.onkeydown = e => {
     if (e.code === 'KeyW'      || e.code === 'ArrowUp')    keys.w     = true;
     if (e.code === 'KeyA'      || e.code === 'ArrowLeft')  keys.a     = true;
@@ -150,6 +157,7 @@ function initGame(sock, initialState, yourIndex, asteroids) {
 
 function stopGame() {
   generation++;
+  killFeed = [];
   keys.w = keys.a = keys.s = keys.d = keys.space = keys.shift = false;
   window.onkeydown = null;
   window.onkeyup   = null;
@@ -805,7 +813,25 @@ function drawHUD(state, now) {
     ctx.textAlign   = 'left';
     ctx.fillText(myShip.name + ' ◄', 12, 22);
     drawHearts(12, 36, myShip.health, col, 'left');
-    drawBoostBar(12, 50, myShip.lastBoost || 0, col, 'left');
+    drawBoostBar(12, 50, myShip.lastBoost || 0, (myShip.ss && myShip.ss.boostCd) || 3500, col, 'left');
+    // XP progress bar
+    const xpPer = (window.XP_PER_TIER || 150);
+    const xpNeeded = (myShip.tier + 1) * xpPer;
+    const xpFill   = myShip.tier >= 10 ? 1 : Math.min(1, myShip.xp / xpNeeded);
+    const barW = 54, barH = 4, bx = 12;
+    ctx.shadowBlur = 0;
+    ctx.fillStyle  = '#111128';
+    ctx.fillRect(bx, 66, barW, barH);
+    ctx.fillStyle  = col;
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = xpFill >= 1 ? 6 : 0;
+    ctx.fillRect(bx, 66, barW * xpFill, barH);
+    ctx.shadowBlur = 0;
+    ctx.font       = '8px monospace';
+    ctx.fillStyle  = myShip.tier >= 10 ? col : '#33335a';
+    ctx.textAlign  = 'left';
+    const tierLabel = myShip.tier >= 10 ? 'MAX TIER' : `T${myShip.tier} · ${myShip.xp}/${xpNeeded} XP`;
+    ctx.fillText(tierLabel, 12, 82);
   }
 
   // Upgrade panel (shown when pendingUpgrade, takes full focus)
@@ -828,6 +854,9 @@ function drawHUD(state, now) {
     ctx.fillText(`Respawning in ${remaining.toFixed(1)}s`, ARENA_W / 2, ARENA_H / 2 + 16);
     ctx.restore();
   }
+
+  // Kill feed — bottom left
+  drawKillFeed();
 
   // Leaderboard — top right
   drawLeaderboard(state);
@@ -968,6 +997,37 @@ function drawUpgradePanel(state) {
   ctx.restore();
 }
 
+function drawKillFeed() {
+  const now = Date.now();
+  killFeed = killFeed.filter(k => now - k.at < 5000);
+  if (!killFeed.length) return;
+  ctx.font = '10px monospace';
+  ctx.shadowBlur = 0;
+  for (let i = 0; i < killFeed.length; i++) {
+    const k     = killFeed[i];
+    const alpha = Math.max(0, 1 - (now - k.at) / 5000);
+    const y     = ARENA_H - 14 - (killFeed.length - 1 - i) * 15;
+    const kCol  = COLORS[k.killerIndex % COLORS.length];
+    const vCol  = COLORS[k.victimIndex % COLORS.length];
+    const kW    = k.killerName.length * 6.2;
+    ctx.globalAlpha = alpha;
+    ctx.textAlign   = 'left';
+    ctx.fillStyle   = kCol;
+    ctx.shadowColor = kCol;
+    ctx.shadowBlur  = 4;
+    ctx.fillText(k.killerName, 10, y);
+    ctx.fillStyle  = '#555577';
+    ctx.shadowBlur = 0;
+    ctx.fillText(' ✕ ', 10 + kW, y);
+    ctx.fillStyle   = vCol;
+    ctx.shadowColor = vCol;
+    ctx.shadowBlur  = 4;
+    ctx.fillText(k.victimName, 10 + kW + 18, y);
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 0;
+}
+
 function drawLeaderboard(state) {
   const sorted = [...state.ships].sort((a, b) => b.kills - a.kills);
   const x = ARENA_W - 12;
@@ -1009,10 +1069,10 @@ function drawHearts(x, y, health, color, align) {
   }
 }
 
-function drawBoostBar(x, y, lastBoost, color, align) {
+function drawBoostBar(x, y, lastBoost, boostCd, color, align) {
   const elapsed = Date.now() - lastBoost;
-  const ready   = elapsed >= BOOST_CD;
-  const fill    = Math.min(1, elapsed / BOOST_CD);
+  const ready   = elapsed >= boostCd;
+  const fill    = Math.min(1, elapsed / boostCd);
   const barW    = 54;
   const barH    = 4;
   const bx      = align === 'right' ? x - barW : x;
@@ -1027,5 +1087,5 @@ function drawBoostBar(x, y, lastBoost, color, align) {
   ctx.font       = '8px monospace';
   ctx.fillStyle  = ready ? color : '#33335a';
   ctx.textAlign  = align;
-  ctx.fillText(ready ? 'BOOST' : `${((BOOST_CD - elapsed) / 1000).toFixed(1)}s`, x, y + 14);
+  ctx.fillText(ready ? 'BOOST' : `${((boostCd - elapsed) / 1000).toFixed(1)}s`, x, y + 14);
 }

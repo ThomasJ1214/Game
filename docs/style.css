@@ -279,8 +279,7 @@ input[type="text"]::placeholder { color: #282848; }
 .player-slot .slot-num  { font-size: .7rem; color: var(--muted); }
 .player-slot .slot-name { font-size: .95rem; }
 
-.player-slot.p1 .slot-name { color: var(--cyan); }
-.player-slot.p2 .slot-name { color: var(--magenta); }
+.player-slot.joined .slot-name { color: var(--cyan); }
 .player-slot.empty .slot-name { color: #252545; font-style: italic; }
 
 /* ═══════════════════════════════════════════
@@ -296,6 +295,7 @@ input[type="text"]::placeholder { color: #282848; }
 
 #canvas {
   display: block;
+  background: #07071a;
   /* Scale to fill viewport while keeping 4:3 ratio */
   width:  min(100vw, calc(100vh * 4 / 3));
   height: auto;

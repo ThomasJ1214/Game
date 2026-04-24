@@ -6,6 +6,12 @@
 
 const $ = id => document.getElementById(id);
 
+const LOBBY_COLORS = [
+  '#00ffff','#ff00ff','#ffff00','#00ff88','#ff8844',
+  '#8888ff','#ff4488','#44ffaa','#ff6666','#66aaff',
+  '#aaff66','#ffaa44','#cc44ff','#44ffff','#ff44cc',
+];
+
 const screens = {
   menu:     $('screen-menu'),
   lobby:    $('screen-lobby'),
@@ -196,15 +202,18 @@ function doJoin() {
 
 function renderPlayerList(players) {
   playerListEl.innerHTML = '';
-  for (let i = 0; i < 2; i++) {
+  // Show all joined players + one empty waiting slot (if room not full)
+  const showCount = Math.min(players.length + 1, 15);
+  for (let i = 0; i < showCount; i++) {
     const p    = players.find(p => p.index === i);
+    const col  = LOBBY_COLORS[i % LOBBY_COLORS.length];
     const slot = document.createElement('div');
-    slot.className = `player-slot ${p ? (i === 0 ? 'p1' : 'p2') : 'empty'}`;
+    slot.className = `player-slot ${p ? 'joined' : 'empty'}`;
     const youTag = (p && p.index === myPlayerIndex)
       ? ' <span class="you-tag">(you)</span>' : '';
     slot.innerHTML =
-      `<span class="slot-num">P${i + 1}</span>` +
-      `<span class="slot-name">${p ? p.name : 'Waiting…'}</span>` +
+      `<span class="slot-num" style="color:${p ? col : ''}">P${i + 1}</span>` +
+      `<span class="slot-name" style="color:${p ? col : ''}">${p ? p.name : 'Waiting…'}</span>` +
       youTag;
     playerListEl.appendChild(slot);
   }
