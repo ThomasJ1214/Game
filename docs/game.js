@@ -142,6 +142,8 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
         if (e.key === '1' && choices[0]) { _socket.emit('choose_upgrade', { nodeId: choices[0] }); _upgradeOpen = false; }
         if (e.key === '2' && choices[1]) { _socket.emit('choose_upgrade', { nodeId: choices[1] }); _upgradeOpen = false; }
         if (e.key === '3' && choices[2]) { _socket.emit('choose_upgrade', { nodeId: choices[2] }); _upgradeOpen = false; }
+        if (e.key === '4' && choices[3]) { _socket.emit('choose_upgrade', { nodeId: choices[3] }); _upgradeOpen = false; }
+        if (e.key === '5' && choices[4]) { _socket.emit('choose_upgrade', { nodeId: choices[4] }); _upgradeOpen = false; }
       }
 
       // Thomas_ special controls
@@ -1201,127 +1203,262 @@ const BRANCH_DESCS  = {
   E: 'Bullet speed & piercing power',
 };
 
+function _branchCol(ch) {
+  return ch === 'S' ? '#00ffdd' : ch === 'F' ? '#ff8844' : ch === 'T' ? '#88aaff' : ch === 'D' ? '#aaff44' : '#cc44ff';
+}
+function _rarityCol(tier) {
+  return tier >= 10 ? '#ffd700' : tier >= 8 ? '#dd88ff' : tier >= 6 ? '#4499ff' : tier >= 4 ? '#44ff99' : '#aaaacc';
+}
+function _rarityLabel(tier) {
+  return tier >= 10 ? 'LEGENDARY' : tier >= 8 ? 'EPIC' : tier >= 6 ? 'RARE' : tier >= 4 ? 'UNCOMMON' : 'COMMON';
+}
+function _roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y,     x + w, y + r,     r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x,     y + h, x,     y + h - r, r);
+  ctx.lineTo(x,     y + r);
+  ctx.arcTo(x,     y,     x + r, y,         r);
+  ctx.closePath();
+}
+
 function drawUpgradePanel(state) {
   if (!_upgradeOpen) return;
   const myShip = state.ships[_myIndex];
   if (!myShip || !myShip.pendingUpgrade || !myShip.upgradePath) { _upgradeOpen = false; return; }
 
-  const tree    = window.UPGRADE_TREE;
+  const tree   = window.UPGRADE_TREE;
   if (!tree) return;
-  const lastId  = myShip.upgradePath[myShip.upgradePath.length - 1];
-  const node    = tree[lastId];
+  const lastId = myShip.upgradePath[myShip.upgradePath.length - 1];
+  const node   = tree[lastId];
   if (!node || !node.next.length) return;
   const choices = node.next;
+  const isRoot  = lastId === 'root';
+  const nowMs   = performance.now();
 
-  const isRoot  = lastId === 'root'; // branch selection
-  const cardW   = 160;
-  const cardH   = isRoot ? 80 : 68;
-  const gap     = 14;
-  const total   = cardW * choices.length + gap * (choices.length - 1);
-  const startX  = (ARENA_W - total) / 2;
-  const panelY  = ARENA_H / 2 - cardH / 2;
+  // Card dimensions — shrink slightly when many choices
+  const n      = choices.length;
+  const cardW  = n >= 5 ? 174 : n >= 4 ? 192 : 222;
+  const cardH  = isRoot ? 196 : 210;
+  const gap    = n >= 5 ? 8 : 12;
+  const total  = cardW * n + gap * (n - 1);
+  const startX = (ARENA_W - total) / 2;
+  const panelY = Math.round(ARENA_H / 2 - cardH / 2) - 10;
 
   ctx.save();
 
-  // Dimmed background
-  ctx.fillStyle = 'rgba(0,0,20,0.55)';
+  // ── Full-screen dim + subtle animated scanlines ───────────────────────
+  ctx.fillStyle = 'rgba(0,0,14,0.82)';
   ctx.fillRect(0, 0, ARENA_W, ARENA_H);
+  ctx.strokeStyle = 'rgba(80,80,200,0.028)';
+  ctx.lineWidth   = 1;
+  for (let sl = 0; sl < ARENA_H; sl += 3) {
+    ctx.beginPath(); ctx.moveTo(0, sl); ctx.lineTo(ARENA_W, sl); ctx.stroke();
+  }
 
-  // Header
+  // ── Header ────────────────────────────────────────────────────────────
+  const tierNum   = myShip.tier + 1;
+  const hdrCol    = _rarityCol(tierNum);
+  const headerY   = panelY - 44;
+
+  // Glowing title bar
+  ctx.fillStyle   = `rgba(${tierNum >= 10 ? '40,30,0' : tierNum >= 8 ? '28,0,40' : tierNum >= 6 ? '0,16,40' : '0,28,18'},0.7)`;
+  _roundRect(ARENA_W / 2 - 220, headerY - 18, 440, 28, 6);
+  ctx.fill();
+  ctx.strokeStyle = hdrCol; ctx.lineWidth = 1; ctx.shadowColor = hdrCol; ctx.shadowBlur = 16;
+  _roundRect(ARENA_W / 2 - 220, headerY - 18, 440, 28, 6);
+  ctx.stroke();
+  ctx.shadowBlur  = 0;
+
   ctx.textAlign   = 'center';
-  ctx.font        = 'bold 13px monospace';
-  ctx.fillStyle   = '#ffffff';
-  ctx.shadowColor = '#ffffff';
-  ctx.shadowBlur  = 8;
-  const headerY   = panelY - 20;
-  ctx.fillText(isRoot ? 'CHOOSE YOUR BRANCH' : `TIER ${myShip.tier + 1} UPGRADE`, ARENA_W / 2, headerY);
-  ctx.font      = '10px monospace';
-  ctx.fillStyle = '#6666aa';
-  ctx.shadowBlur = 0;
-  ctx.fillText('Press 1 / 2' + (choices.length > 2 ? ' / 3' : ''), ARENA_W / 2, headerY + 14);
+  ctx.font        = 'bold 16px monospace';
+  ctx.fillStyle   = hdrCol;
+  ctx.shadowColor = hdrCol; ctx.shadowBlur = 18;
+  ctx.fillText(isRoot ? '◈  CHOOSE YOUR PATH  ◈' : `◈  TIER ${tierNum} UPGRADE  ◈`, ARENA_W / 2, headerY);
+  ctx.shadowBlur  = 0;
 
-  // Thomas_-only missile note
+  // Sub-hint
+  const keyHint = choices.map((_, i) => i + 1).join(' / ');
+  ctx.font      = '10px monospace';
+  ctx.fillStyle = '#334466';
+  ctx.fillText(`Press [ ${keyHint} ] to select  ·  [U] to close`, ARENA_W / 2, headerY + 18);
+
   if (_isThomas) {
     ctx.font      = '9px monospace';
     ctx.fillStyle = '#ff6622';
-    ctx.shadowColor = '#ff4400';
-    ctx.shadowBlur  = 4;
-    ctx.fillText('✦ TRACKING MISSILE: [J] lock  [K] cycle  [I] fire', ARENA_W / 2, headerY + 30);
+    ctx.shadowColor = '#ff4400'; ctx.shadowBlur = 4;
+    ctx.fillText('✦ MISSILE: [J] lock  [K] cycle  [I] fire  [O] salvo', ARENA_W / 2, headerY + 32);
     ctx.shadowBlur = 0;
   }
 
+  // ── Cards ─────────────────────────────────────────────────────────────
   choices.forEach((id, idx) => {
-    const cn   = tree[id];
+    const cn  = tree[id];
     if (!cn) return;
-    const cx   = startX + idx * (cardW + gap);
-    const col  = id[0] === 'S' ? '#00ffdd' : id[0] === 'F' ? '#ff8844' : id[0] === 'T' ? '#88aaff' : id[0] === 'D' ? '#aaff44' : '#cc44ff';
+    const cx  = startX + idx * (cardW + gap);
+    const bch = id[0];
+    const col = _branchCol(bch);
+    const rar = _rarityCol(cn.tier);
+    const pulse = 0.55 + 0.45 * Math.sin(nowMs * 0.0028 + idx * 1.4);
 
-    // Card background
-    ctx.fillStyle   = 'rgba(8,8,28,0.88)';
-    ctx.strokeStyle = col;
-    ctx.lineWidth   = 1.5;
-    ctx.shadowColor = col;
-    ctx.shadowBlur  = 10;
-    const r = 6;
-    ctx.beginPath();
-    ctx.moveTo(cx + r, panelY);
-    ctx.lineTo(cx + cardW - r, panelY);
-    ctx.arcTo(cx + cardW, panelY, cx + cardW, panelY + r, r);
-    ctx.lineTo(cx + cardW, panelY + cardH - r);
-    ctx.arcTo(cx + cardW, panelY + cardH, cx + cardW - r, panelY + cardH, r);
-    ctx.lineTo(cx + r, panelY + cardH);
-    ctx.arcTo(cx, panelY + cardH, cx, panelY + cardH - r, r);
-    ctx.lineTo(cx, panelY + r);
-    ctx.arcTo(cx, panelY, cx + r, panelY, r);
-    ctx.closePath();
+    // ── Background gradient ─────────────────────────────────────────────
+    const bgMap = { S:'0,20,18', F:'24,8,0', T:'4,8,28', D:'8,24,0', E:'18,0,28' };
+    const bgRgb = bgMap[bch] || '6,6,20';
+    const bg    = ctx.createLinearGradient(cx, panelY, cx + cardW, panelY + cardH);
+    bg.addColorStop(0,   `rgba(5,5,18,0.97)`);
+    bg.addColorStop(0.35,`rgba(${bgRgb},0.94)`);
+    bg.addColorStop(0.7, `rgba(${bgRgb},0.88)`);
+    bg.addColorStop(1,   `rgba(3,3,14,0.98)`);
+    ctx.fillStyle = bg;
+    _roundRect(cx, panelY, cardW, cardH, 10);
     ctx.fill();
+
+    // Subtle inner highlight at top
+    const shine = ctx.createLinearGradient(cx, panelY, cx, panelY + 40);
+    shine.addColorStop(0, `rgba(255,255,255,0.07)`);
+    shine.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = shine;
+    _roundRect(cx + 1, panelY + 1, cardW - 2, 38, 9);
+    ctx.fill();
+
+    // Animated glowing border
+    ctx.strokeStyle = col;
+    ctx.lineWidth   = 1.8;
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = 14 * pulse;
+    ctx.globalAlpha = 0.6 + 0.4 * pulse;
+    _roundRect(cx, panelY, cardW, cardH, 10);
     ctx.stroke();
+    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+
+    // Corner brackets (decorative)
+    ctx.strokeStyle = rar; ctx.lineWidth = 1.5;
+    ctx.shadowColor = rar; ctx.shadowBlur = 8;
+    const bl = 14;
+    [[cx+5,panelY+5,1,1],[cx+cardW-5,panelY+5,-1,1],[cx+5,panelY+cardH-5,1,-1],[cx+cardW-5,panelY+cardH-5,-1,-1]].forEach(([bx,by,sx,sy]) => {
+      ctx.beginPath();
+      ctx.moveTo(bx, by + sy*bl); ctx.lineTo(bx, by); ctx.lineTo(bx + sx*bl, by);
+      ctx.stroke();
+    });
     ctx.shadowBlur = 0;
 
-    // Key hint badge
-    ctx.fillStyle = col;
-    ctx.font      = 'bold 11px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(`[${idx + 1}]`, cx + 8, panelY + 16);
+    // ── Key badge ────────────────────────────────────────────────────────
+    ctx.fillStyle   = col; ctx.shadowColor = col; ctx.shadowBlur = 8;
+    ctx.font        = 'bold 10px monospace'; ctx.textAlign = 'left';
+    ctx.fillText(`[${idx+1}]`, cx + 9, panelY + 17);
+    ctx.shadowBlur  = 0;
 
-    // Upgrade name
-    ctx.font      = 'bold 11px monospace';
-    ctx.fillStyle = '#ffffff';
-    ctx.textAlign = 'center';
-    ctx.fillText(cn.name, cx + cardW / 2, panelY + 16);
+    // Rarity pill (top-right)
+    ctx.font      = 'bold 8px monospace';
+    ctx.fillStyle = rar; ctx.shadowColor = rar; ctx.shadowBlur = 6;
+    ctx.textAlign = 'right';
+    ctx.fillText(_rarityLabel(cn.tier), cx + cardW - 8, panelY + 17);
+    ctx.shadowBlur = 0;
 
-    // Branch label for root choice
+    // ── Upgrade name ─────────────────────────────────────────────────────
+    const nameFontSz = n >= 5 ? 11 : 13;
+    ctx.font        = `bold ${nameFontSz}px monospace`;
+    ctx.fillStyle   = '#ffffff';
+    ctx.shadowColor = col; ctx.shadowBlur = 12;
+    ctx.textAlign   = 'center';
+    ctx.fillText(cn.name, cx + cardW / 2, panelY + 34);
+    ctx.shadowBlur  = 0;
+
+    // Branch label + desc (root only)
     if (isRoot) {
-      ctx.font      = '10px monospace';
-      ctx.fillStyle = col;
-      ctx.fillText(BRANCH_LABELS[id[0]] || '', cx + cardW / 2, panelY + 31);
-      ctx.fillStyle = '#5555aa';
-      ctx.fillText(BRANCH_DESCS[id[0]] || '', cx + cardW / 2, panelY + 46);
+      ctx.font      = '11px monospace';
+      ctx.fillStyle = col; ctx.shadowColor = col; ctx.shadowBlur = 8;
+      ctx.fillText(BRANCH_LABELS[bch] || bch, cx + cardW / 2, panelY + 52);
+      ctx.shadowBlur = 0;
+      ctx.font      = '9px monospace'; ctx.fillStyle = '#445566';
+      ctx.fillText(BRANCH_DESCS[bch] || '', cx + cardW / 2, panelY + 65);
     }
 
-    // Stats summary
-    const stats = cn.stats;
-    const lines = [];
-    if (stats.thrust)     lines.push(`+Thrust`);
-    if (stats.maxSpd)     lines.push(`+Speed`);
-    if (stats.boostCd)    lines.push(`+Dash`);
-    if (stats.rotate)     lines.push(`+Turn`);
-    if (stats.drag)       lines.push(`+Drift`);
-    if (stats.shootCd)    lines.push(`+Fire Rate`);
-    if (stats.bulletDmg)  lines.push(`+Dmg ×${stats.bulletDmg}`);
-    if (stats.maxBullets) lines.push(`+Bullets`);
-    if (stats.bulletSpd)  lines.push(`+Bullet Spd`);
-    if (stats.health)     lines.push(`+${stats.health} HP`);
-    if (stats.regenRate)  lines.push(`+Regen`);
-    if (stats.dmgReduce)  lines.push(`+Resistance`);
+    // ── Divider line ─────────────────────────────────────────────────────
+    const divY = isRoot ? panelY + 74 : panelY + 44;
+    const dg   = ctx.createLinearGradient(cx + 8, 0, cx + cardW - 8, 0);
+    dg.addColorStop(0, 'rgba(255,255,255,0)');
+    dg.addColorStop(0.4, col); dg.addColorStop(0.6, col);
+    dg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.strokeStyle = dg; ctx.lineWidth = 0.8; ctx.globalAlpha = 0.4;
+    ctx.beginPath(); ctx.moveTo(cx + 8, divY); ctx.lineTo(cx + cardW - 8, divY); ctx.stroke();
+    ctx.globalAlpha = 1;
 
-    ctx.font      = '9px monospace';
-    ctx.fillStyle = '#8888cc';
-    ctx.textAlign = 'center';
-    const topLine = isRoot ? panelY + 60 : panelY + 30;
-    lines.slice(0, 3).forEach((l, li) => {
-      ctx.fillText(l, cx + cardW / 2, topLine + li * 13);
+    // ── Stat bars ────────────────────────────────────────────────────────
+    const stats = cn.stats;
+    const statDefs = [
+      { key:'thrust',     label:'THRUST',    max:0.12, fmt: v=>`+${v.toFixed(2)}` },
+      { key:'maxSpd',     label:'SPEED',     max:4.0,  fmt: v=>`+${v.toFixed(1)}` },
+      { key:'boostCd',    label:'DASH CD',   max:800,  fmt: v=>`-${v}ms` },
+      { key:'rotate',     label:'TURN',      max:0.020,fmt: v=>`+${v.toFixed(3)}` },
+      { key:'drag',       label:'DRIFT',     max:0.010,fmt: v=>`+${v.toFixed(3)}` },
+      { key:'shootCd',    label:'FIRE RATE', max:80,   fmt: v=>`-${v}ms` },
+      { key:'bulletDmg',  label:'DAMAGE',    max:4,    fmt: v=>`+${v}` },
+      { key:'maxBullets', label:'BULLETS',   max:4,    fmt: v=>`+${v}` },
+      { key:'bulletSpd',  label:'PROJ SPD',  max:8,    fmt: v=>`+${v}` },
+      { key:'health',     label:'HEALTH',    max:6,    fmt: v=>`+${v} HP` },
+      { key:'regenRate',  label:'REGEN',     max:6,    fmt: v=>`+${v}/s` },
+      { key:'dmgReduce',  label:'ARMOR',     max:0.20, fmt: v=>`+${Math.round(v*100)}%` },
+    ];
+
+    const rows    = statDefs.filter(d => stats[d.key]);
+    const maxShow = isRoot ? 2 : 5;
+    const barX    = cx + 8;
+    const barW    = cardW - 16;
+    const barH    = 5;
+    let   ry      = divY + 11;
+
+    rows.slice(0, maxShow).forEach(d => {
+      const val  = stats[d.key];
+      const fill = Math.min(1, Math.abs(val) / d.max);
+
+      // Bar track
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fillRect(barX, ry, barW, barH);
+
+      // Bar fill — gradient from branch to rarity color
+      const bfg = ctx.createLinearGradient(barX, 0, barX + barW * fill, 0);
+      bfg.addColorStop(0, col); bfg.addColorStop(1, rar);
+      ctx.fillStyle = bfg;
+      ctx.shadowColor = col; ctx.shadowBlur = 4;
+      ctx.fillRect(barX, ry, barW * fill, barH);
+      ctx.shadowBlur = 0;
+
+      // Nub at end of bar
+      ctx.fillStyle = rar; ctx.shadowColor = rar; ctx.shadowBlur = 6;
+      ctx.fillRect(barX + barW * fill - 1, ry - 1, 2, barH + 2);
+      ctx.shadowBlur = 0;
+
+      // Labels
+      ctx.font = '8px monospace'; ctx.textAlign = 'left';
+      ctx.fillStyle = '#445577';
+      ctx.fillText(d.label, barX, ry - 2);
+      ctx.fillStyle = col; ctx.textAlign = 'right';
+      ctx.fillText(d.fmt(val), cx + cardW - 8, ry - 2);
+
+      ry += 20;
     });
+
+    // ── Tier badge (bottom-center) ────────────────────────────────────────
+    const tierBadge = cn.tier >= 10 ? '★ MAX' : `T${cn.tier}`;
+    ctx.font      = 'bold 9px monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = rar; ctx.shadowColor = rar; ctx.shadowBlur = 8;
+    ctx.fillText(tierBadge, cx + cardW / 2, panelY + cardH - 8);
+    ctx.shadowBlur = 0;
+
+    // ── Sub-branch indicator ──────────────────────────────────────────────
+    // Show a small tag if this is a c/d sub-branch
+    const isCPath = id.endsWith('c') || id.endsWith('d');
+    if (isCPath) {
+      ctx.font      = '8px monospace'; ctx.textAlign = 'left';
+      ctx.fillStyle = '#ffaa22'; ctx.shadowColor = '#ffaa22'; ctx.shadowBlur = 5;
+      ctx.fillText('⬡ NEW PATH', cx + 8, panelY + cardH - 8);
+      ctx.shadowBlur = 0;
+    }
   });
 
   ctx.restore();
