@@ -128,19 +128,53 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
   });
 
   _socket.off('hack_effect');
-  _socket.on('hack_effect', ({ type, x, y, r, ownerIndex }) => {
-    const HACK_COLS = { dash:'#00ffff', nova:'#ff4400', god:'#ffff00', warp:'#aa44ff', emp:'#88aaff' };
-    const col = HACK_COLS[type] || '#ffffff';
-    const maxR = r || (type === 'nova' ? 480 : type === 'emp' ? 900 : 80);
-    hackFlashes.push({ x, y, r: 0, maxR, life: 1.0, col });
-    if (type === 'nova') {
+  _socket.on('hack_effect', ({ type, x, y, r, angle, len, ownerIndex }) => {
+    const HACK_COLS = {
+      dash:'#00ffff', nova:'#ff4400', god:'#ffff00', warp:'#aa44ff', emp:'#88aaff',
+      shockwave:'#ff8800', timestop:'#44eeff', deathray:'#ffffff', overclock:'#ffdd00',
+    };
+    const col   = HACK_COLS[type] || '#ffffff';
+    const maxR  = r || 120;
+
+    if (type === 'deathray') {
+      // Store as a ray flash instead of ring
+      hackFlashes.push({ mode:'ray', x, y, angle, len: len || 9600, life: 1.0, col });
+      shakeAmount = Math.max(shakeAmount, 18);
+      // Spark particles along the beam
+      for (let i = 0; i < 30; i++) {
+        const t   = Math.random();
+        const px  = x + Math.cos(angle) * t * (len || 9600);
+        const py  = y + Math.sin(angle) * t * (len || 9600);
+        const perp = (Math.random() - 0.5) * 80;
+        explosions.push({ x: px - Math.sin(angle)*perp, y: py + Math.cos(angle)*perp, r: 4 + Math.random()*8, life: 1.0, vx: (Math.random()-0.5)*4, vy: (Math.random()-0.5)*4, col: '#ffffff', decay: 0.04 + Math.random()*0.04 });
+      }
+    } else if (type === 'shockwave') {
+      hackFlashes.push({ mode:'ring', x, y, r: 0, maxR, life: 1.0, col });
+      shakeAmount = Math.max(shakeAmount, 16);
+      for (let i = 0; i < 18; i++) {
+        const ang = (i / 18) * Math.PI * 2;
+        explosions.push({ x: x + Math.cos(ang)*60, y: y + Math.sin(ang)*60, r: 8+Math.random()*14, life:1.0, vx:Math.cos(ang)*6, vy:Math.sin(ang)*6, col:'#ff8800', decay:0.03+Math.random()*0.02 });
+      }
+    } else if (type === 'timestop') {
+      hackFlashes.push({ mode:'ring', x, y, r: 0, maxR: ARENA_W * 1.5, life: 1.0, col });
+      shakeAmount = Math.max(shakeAmount, 8);
+    } else if (type === 'overclock') {
+      hackFlashes.push({ mode:'ring', x, y, r: 0, maxR: 200, life: 1.0, col });
+      // Golden burst sparks
+      for (let i = 0; i < 20; i++) {
+        const ang = Math.random() * Math.PI * 2, spd = 4 + Math.random()*8;
+        explosions.push({ x, y, r: 3+Math.random()*5, life:1.0, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd, col:'#ffdd00', decay:0.025+Math.random()*0.025 });
+      }
+    } else if (type === 'nova') {
+      hackFlashes.push({ mode:'ring', x, y, r: 0, maxR, life: 1.0, col });
       shakeAmount = Math.max(shakeAmount, 14);
       for (let i = 0; i < 24; i++) {
         const ang = Math.random() * Math.PI * 2, d = Math.random() * maxR * 0.6;
-        explosions.push({ x: x + Math.cos(ang)*d, y: y + Math.sin(ang)*d, r: 10 + Math.random()*18, life: 1.0, vx: Math.cos(ang)*3, vy: Math.sin(ang)*3, col: '#ff6600' });
+        explosions.push({ x: x+Math.cos(ang)*d, y: y+Math.sin(ang)*d, r:10+Math.random()*18, life:1.0, vx:Math.cos(ang)*3, vy:Math.sin(ang)*3, col:'#ff6600', decay:0.018+Math.random()*0.016 });
       }
-    } else if (type === 'emp') {
-      shakeAmount = Math.max(shakeAmount, 7);
+    } else {
+      hackFlashes.push({ mode:'ring', x, y, r: 0, maxR, life: 1.0, col });
+      if (type === 'emp') shakeAmount = Math.max(shakeAmount, 7);
     }
   });
 
@@ -219,11 +253,15 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
           e.preventDefault();
         }
         // Power hacks
-        if (e.code === 'KeyV') { _socket.emit('thomas_hack', { type: 'dash' });  e.preventDefault(); }
-        if (e.code === 'KeyN') { _socket.emit('thomas_hack', { type: 'nova' });  e.preventDefault(); }
-        if (e.code === 'KeyG') { _socket.emit('thomas_hack', { type: 'god' });   e.preventDefault(); }
-        if (e.code === 'KeyB') { _socket.emit('thomas_hack', { type: 'warp' });  e.preventDefault(); }
-        if (e.code === 'KeyE' && !_upgradeOpen) { _socket.emit('thomas_hack', { type: 'emp' }); e.preventDefault(); }
+        if (e.code === 'KeyV') { _socket.emit('thomas_hack', { type: 'dash' });       e.preventDefault(); }
+        if (e.code === 'KeyN') { _socket.emit('thomas_hack', { type: 'nova' });       e.preventDefault(); }
+        if (e.code === 'KeyG') { _socket.emit('thomas_hack', { type: 'god' });        e.preventDefault(); }
+        if (e.code === 'KeyB') { _socket.emit('thomas_hack', { type: 'warp' });       e.preventDefault(); }
+        if (e.code === 'KeyE' && !_upgradeOpen) { _socket.emit('thomas_hack', { type: 'emp' });       e.preventDefault(); }
+        if (e.code === 'KeyH') { _socket.emit('thomas_hack', { type: 'shockwave' });  e.preventDefault(); }
+        if (e.code === 'KeyT') { _socket.emit('thomas_hack', { type: 'timestop' });   e.preventDefault(); }
+        if (e.code === 'KeyL') { _socket.emit('thomas_hack', { type: 'deathray' });   e.preventDefault(); }
+        if (e.code === 'KeyC') { _socket.emit('thomas_hack', { type: 'overclock' });  e.preventDefault(); }
       }
     }
   };
@@ -449,22 +487,44 @@ function drawHackFlashes() {
   ctx.save();
   for (let i = hackFlashes.length - 1; i >= 0; i--) {
     const f = hackFlashes[i];
-    f.r    += f.maxR * 0.07;
     f.life -= 0.05;
     if (f.life <= 0) { hackFlashes.splice(i, 1); continue; }
-    const alpha = f.life * f.life * 0.55;
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = f.col;
-    ctx.shadowColor = f.col;
-    ctx.shadowBlur  = 28;
-    ctx.lineWidth   = 3 * f.life;
-    ctx.beginPath();
-    ctx.arc(f.x, f.y, Math.min(f.r, f.maxR), 0, Math.PI * 2);
-    ctx.stroke();
-    // Inner fill pulse
-    ctx.globalAlpha = alpha * 0.18;
-    ctx.fillStyle   = f.col;
-    ctx.fill();
+
+    if (f.mode === 'ray') {
+      // Fading beam line
+      const alpha = f.life * 0.9;
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = f.col;
+      ctx.shadowColor = f.col;
+      ctx.shadowBlur  = 40;
+      ctx.lineWidth   = 8 + 24 * f.life;
+      ctx.lineCap     = 'round';
+      ctx.beginPath();
+      ctx.moveTo(f.x, f.y);
+      ctx.lineTo(f.x + Math.cos(f.angle) * f.len, f.y + Math.sin(f.angle) * f.len);
+      ctx.stroke();
+      // White core
+      ctx.globalAlpha = alpha * 0.6;
+      ctx.strokeStyle = '#ffffff';
+      ctx.shadowBlur  = 0;
+      ctx.lineWidth   = 3 * f.life;
+      ctx.stroke();
+    } else {
+      // Expanding ring
+      f.r += f.maxR * 0.07;
+      const alpha = f.life * f.life * 0.55;
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = f.col;
+      ctx.shadowColor = f.col;
+      ctx.shadowBlur  = 28;
+      ctx.lineWidth   = 3 * f.life;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, Math.min(f.r, f.maxR), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = alpha * 0.18;
+      ctx.fillStyle   = f.col;
+      ctx.fill();
+    }
   }
   ctx.globalAlpha = 1;
   ctx.shadowBlur  = 0;
@@ -1305,11 +1365,15 @@ function drawHUD(state, now) {
 
       // Hacks
       const hacks = [
-        { key: 'V', label: 'Void Dash',   desc: '700px teleport + invincibility', col: '#00ffff' },
-        { key: 'N', label: 'Nova Blast',  desc: '480px AoE nuke',                 col: '#ff4400' },
-        { key: 'G', label: 'God Mode',    desc: 'Full heal + 6s invincible',       col: '#ffff00' },
-        { key: 'B', label: 'Void Warp',   desc: 'Safe teleport anywhere',          col: '#aa44ff' },
-        { key: 'E', label: 'EMP Pulse',   desc: 'Stun+zero all nearby enemies',    col: '#88aaff' },
+        { key: 'V', label: 'Void Dash',   desc: '700px teleport + invincibility',  col: '#00ffff' },
+        { key: 'N', label: 'Nova Blast',  desc: '480px AoE nuke',                  col: '#ff4400' },
+        { key: 'G', label: 'God Mode',    desc: 'Full heal + 6s invincible',        col: '#ffff00' },
+        { key: 'B', label: 'Void Warp',   desc: 'Safe teleport anywhere',           col: '#aa44ff' },
+        { key: 'E', label: 'EMP Pulse',   desc: 'Stun+zero all nearby enemies',     col: '#88aaff' },
+        { key: 'H', label: 'Shockwave',   desc: 'Blast all enemies away at speed',  col: '#ff8800' },
+        { key: 'T', label: 'Time Stop',   desc: 'Freeze all enemies for 3s',        col: '#44eeff' },
+        { key: 'L', label: 'Death Ray',   desc: 'Instant kill beam straight ahead', col: '#ffffff' },
+        { key: 'C', label: 'Overclock',   desc: '5s: 10× fire, 2.5× speed, invuln',col: '#ffdd00' },
       ];
       for (const h of hacks) {
         ctx.font        = 'bold 9px monospace';

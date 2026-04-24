@@ -232,9 +232,15 @@ function revertUpgrade(ship) {
 // ─── PHYSICS ─────────────────────────────────────────────────────────────────
 function stepShip(ship, inp, now) {
   if (!ship.alive) return;
+  // Time Stop: completely freeze position and velocity
+  if (ship._frozenUntil && now < ship._frozenUntil) {
+    ship.vx = 0; ship.vy = 0; ship.angularVel = 0;
+    return;
+  }
   // EMP stun: nullify all inputs
   if (ship._empUntil && now < ship._empUntil) inp = emptyInput();
   const ss = ship.ss;
+  const isOverclocked = ship._overclockUntil && now < ship._overclockUntil;
 
   // Rotation with angular momentum
   if (inp.a) ship.angularVel -= ANGULAR_ACCEL;
@@ -258,7 +264,7 @@ function stepShip(ship, inp, now) {
   if (inp.s) { ship.vx -= Math.cos(ship.angle)*ss.thrust; ship.vy -= Math.sin(ship.angle)*ss.thrust; }
 
   const spd = Math.hypot(ship.vx, ship.vy);
-  const cap = ship.boosting ? ss.maxSpd * BOOST_MULT_SPD : ss.maxSpd;
+  const cap = (ship.boosting ? ss.maxSpd * BOOST_MULT_SPD : ss.maxSpd) * (isOverclocked ? 2.5 : 1);
   if (spd > cap) { ship.vx = ship.vx/spd*cap; ship.vy = ship.vy/spd*cap; }
   ship.vx *= ss.drag; ship.vy *= ss.drag;
   ship.x  += ship.vx; ship.y  += ship.vy;
@@ -288,7 +294,8 @@ function tryFire(ship, bullets, tick, now) {
   const ss = ship.ss;
   // Count only normal bullets (homing missiles have their own separate cap)
   if (bullets.filter(b=>b.ownerIndex===ship.index && !b.homing).length >= ss.maxBullets) return;
-  if (now - ship.lastShot < ss.shootCd) return;
+  const isOverclocked = ship._overclockUntil && now < ship._overclockUntil;
+  if (!isOverclocked && now - ship.lastShot < ss.shootCd) return;
   ship.lastShot = now;
   bullets.push({
     id: nextBulletId++,
@@ -1452,6 +1459,49 @@ io.on('connection', socket => {
         }
       }
       io.to(code).emit('hack_effect', { type:'emp', x:ship.x, y:ship.y, r:EMP_R, ownerIndex:ship.index });
+
+    } else if (type === 'shockwave') {
+      // Shockwave: blast every living enemy away at extreme velocity
+      const SHOCK_SPD = 38;
+      for (const tgt of room.gameState.ships) {
+        if (tgt.index === ship.index || !tgt.alive) continue;
+        const dx = tgt.x - ship.x, dy = tgt.y - ship.y;
+        const d  = Math.hypot(dx, dy) || 1;
+        tgt.vx = (dx / d) * SHOCK_SPD;
+        tgt.vy = (dy / d) * SHOCK_SPD;
+      }
+      io.to(code).emit('hack_effect', { type:'shockwave', x:ship.x, y:ship.y, r:1800, ownerIndex:ship.index });
+
+    } else if (type === 'timestop') {
+      // Time Stop: freeze every living enemy completely for 3 seconds
+      for (const tgt of room.gameState.ships) {
+        if (tgt.index === ship.index || !tgt.alive) continue;
+        tgt._frozenUntil = now + 3000;
+        tgt.vx = 0; tgt.vy = 0; tgt.angularVel = 0;
+      }
+      io.to(code).emit('hack_effect', { type:'timestop', x:ship.x, y:ship.y, r:WORLD_W, ownerIndex:ship.index });
+
+    } else if (type === 'deathray') {
+      // Death Ray: instant kill beam — 60px wide, full world length
+      const RAY_W  = 60;
+      const cx     = Math.cos(ship.angle), cy = Math.sin(ship.angle);
+      for (const tgt of room.gameState.ships) {
+        if (tgt.index === ship.index || !tgt.alive || tgt.invincible) continue;
+        const dx = tgt.x - ship.x, dy = tgt.y - ship.y;
+        const proj = dx * cx + dy * cy;
+        if (proj < 0) continue; // behind Thomas_
+        const perp = Math.abs(dx * cy - dy * cx);
+        if (perp < RAY_W) handleDeath(tgt, ship, room.gameState, room, now);
+      }
+      io.to(code).emit('hack_effect', { type:'deathray', x:ship.x, y:ship.y, angle:ship.angle, len:WORLD_W, ownerIndex:ship.index });
+
+    } else if (type === 'overclock') {
+      // Overclock: 5s of godlike speed, 10× fire rate, invincibility
+      ship._overclockUntil = now + 5000;
+      ship.invincible      = true;
+      ship.invincibleUntil = now + 5000;
+      io.to(code).emit('hack_effect', { type:'overclock', x:ship.x, y:ship.y, ownerIndex:ship.index });
+
     }
   });
 
