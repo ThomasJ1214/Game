@@ -4,8 +4,8 @@
 // SHARED CONSTANTS  (must match server.js)
 // ─────────────────────────────────────────────────────────────
 
-const ARENA_W       = 960;
-const ARENA_H       = 720;
+let   ARENA_W       = window.innerWidth  || 960;
+let   ARENA_H       = window.innerHeight || 720;
 const WORLD_W       = 9600;
 const WORLD_H       = 7200;
 const SHIP_RADIUS   = 16;
@@ -49,6 +49,7 @@ let _upgradeOpen    = false;
 let _selectedTarget = -1;
 let _isThomas       = false;
 let shipTrails      = {};   // index → [{x,y,spd}] circular history
+let hackFlashes     = [];  // { x,y,r,maxR,life,col }
 
 const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
 
@@ -66,6 +67,7 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
   shockwaves      = [];
   boostTrail      = [];
   shipTrails      = {};
+  hackFlashes     = [];
   shakeAmount     = 0;
   cameraX         = 0;
   cameraY         = 0;
@@ -94,6 +96,14 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
   canvas = document.getElementById('canvas');
   ctx    = canvas.getContext('2d');
 
+  // Full-screen canvas — match window dimensions
+  ARENA_W = canvas.width  = window.innerWidth;
+  ARENA_H = canvas.height = window.innerHeight;
+  window.onresize = () => {
+    ARENA_W = canvas.width  = window.innerWidth;
+    ARENA_H = canvas.height = window.innerHeight;
+  };
+
   // Three-layer star field: distant dim, mid, bright
   stars = Array.from({ length: 160 }, () => ({
     x:     Math.random() * ARENA_W,
@@ -117,6 +127,23 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
     if (killFeed.length > 6) killFeed.shift();
   });
 
+  _socket.off('hack_effect');
+  _socket.on('hack_effect', ({ type, x, y, r, ownerIndex }) => {
+    const HACK_COLS = { dash:'#00ffff', nova:'#ff4400', god:'#ffff00', warp:'#aa44ff', emp:'#88aaff' };
+    const col = HACK_COLS[type] || '#ffffff';
+    const maxR = r || (type === 'nova' ? 480 : type === 'emp' ? 900 : 80);
+    hackFlashes.push({ x, y, r: 0, maxR, life: 1.0, col });
+    if (type === 'nova') {
+      shakeAmount = Math.max(shakeAmount, 14);
+      for (let i = 0; i < 24; i++) {
+        const ang = Math.random() * Math.PI * 2, d = Math.random() * maxR * 0.6;
+        explosions.push({ x: x + Math.cos(ang)*d, y: y + Math.sin(ang)*d, r: 10 + Math.random()*18, life: 1.0, vx: Math.cos(ang)*3, vy: Math.sin(ang)*3, col: '#ff6600' });
+      }
+    } else if (type === 'emp') {
+      shakeAmount = Math.max(shakeAmount, 7);
+    }
+  });
+
   window.onkeydown = e => {
     if (e.code === 'KeyW'      || e.code === 'ArrowUp')    keys.w     = true;
     if (e.code === 'KeyA'      || e.code === 'ArrowLeft')  keys.a     = true;
@@ -125,7 +152,7 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
     if (e.code === 'Space')    { keys.space = true; if (generation === myGen) e.preventDefault(); }
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') keys.shift = true;
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
-    if (e.key  === '?') toggleHelp();
+    if (e.key  === '?') { toggleHelp(); e.preventDefault(); }
 
     if (serverState && _socket) {
       const myShip = serverState.ships[_myIndex];
@@ -182,6 +209,12 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
           _socket.emit('fire_salvo');
           e.preventDefault();
         }
+        // Power hacks
+        if (e.code === 'KeyV') { _socket.emit('thomas_hack', { type: 'dash' });  e.preventDefault(); }
+        if (e.code === 'KeyN') { _socket.emit('thomas_hack', { type: 'nova' });  e.preventDefault(); }
+        if (e.code === 'KeyG') { _socket.emit('thomas_hack', { type: 'god' });   e.preventDefault(); }
+        if (e.code === 'KeyB') { _socket.emit('thomas_hack', { type: 'warp' });  e.preventDefault(); }
+        if (e.code === 'KeyE' && !_upgradeOpen) { _socket.emit('thomas_hack', { type: 'emp' }); e.preventDefault(); }
       }
     }
   };
@@ -196,6 +229,11 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
   window.onblur = () => {
     keys.w = keys.a = keys.s = keys.d = keys.space = keys.shift = false;
   };
+
+  // Show Thomas_-only help rows only for Thomas_
+  document.querySelectorAll('.thomas-only').forEach(row => {
+    row.style.display = _isThomas ? '' : 'none';
+  });
 
   showHelp();
   helpTimer = setTimeout(hideHelp, 3200);
@@ -394,6 +432,60 @@ function tickBoostTrail(state) {
   }
   ctx.globalAlpha = 1;
   ctx.shadowBlur  = 0;
+  ctx.restore();
+}
+
+function drawHackFlashes() {
+  if (!hackFlashes.length) return;
+  ctx.save();
+  for (let i = hackFlashes.length - 1; i >= 0; i--) {
+    const f = hackFlashes[i];
+    f.r    += f.maxR * 0.07;
+    f.life -= 0.05;
+    if (f.life <= 0) { hackFlashes.splice(i, 1); continue; }
+    const alpha = f.life * f.life * 0.55;
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = f.col;
+    ctx.shadowColor = f.col;
+    ctx.shadowBlur  = 28;
+    ctx.lineWidth   = 3 * f.life;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, Math.min(f.r, f.maxR), 0, Math.PI * 2);
+    ctx.stroke();
+    // Inner fill pulse
+    ctx.globalAlpha = alpha * 0.18;
+    ctx.fillStyle   = f.col;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 0;
+  ctx.restore();
+}
+
+function drawAimLine(ship) {
+  if (!ship || !ship.alive) return;
+  const ss = ship.ss || {};
+  const spd = (ss.bulletSpd || 12) * 1.5;
+  const len = Math.min(spd * 28, 520);
+  const nx  = Math.cos(ship.angle);
+  const ny  = Math.sin(ship.angle);
+  const x0  = ship.x + nx * (SHIP_RADIUS + 4);
+  const y0  = ship.y + ny * (SHIP_RADIUS + 4);
+  const x1  = x0 + nx * len;
+  const y1  = y0 + ny * len;
+  ctx.save();
+  ctx.setLineDash([6, 9]);
+  ctx.lineDashOffset = -(Date.now() * 0.06 % 15);
+  ctx.strokeStyle = COLORS[ship.index % COLORS.length];
+  ctx.globalAlpha = 0.28;
+  ctx.lineWidth   = 1.2;
+  ctx.shadowBlur  = 0;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
   ctx.restore();
 }
 
@@ -638,6 +730,12 @@ function render(state, now) {
     const tgt = state.ships[_selectedTarget];
     if (tgt && tgt.alive) drawTargetReticle(tgt.x, tgt.y, now);
   }
+
+  // Aim line for local player
+  if (myShip && myShip.alive) drawAimLine(myShip);
+
+  // Hack effect rings (world space)
+  drawHackFlashes();
 
   ctx.restore();
 

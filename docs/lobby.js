@@ -34,6 +34,10 @@ const btnDoCreate  = $('btn-do-create');
 const inpCode      = $('inp-code');
 const btnJoin      = $('btn-join');
 const menuError    = $('menu-error');
+const publicGamesList  = $('public-games-list');
+const publicGamesEmpty = $('public-games-empty');
+const btnRefreshPublic = $('btn-refresh-public');
+const visButtons       = Array.from(document.querySelectorAll('.vis-btn'));
 
 // Lobby elements
 const lobbyHeading   = $('lobby-heading');
@@ -58,6 +62,7 @@ let currentCode        = '';
 let mode               = 'create';    // 'create' | 'join'
 let responseTimer      = null;
 let selectedDifficulty = 'medium';
+let selectedVisibility = 'private';   // 'private' | 'public'
 
 // Auto-join from URL param: ?room=XXXX
 (function () {
@@ -77,6 +82,66 @@ diffTabs.forEach(btn => {
     btn.classList.add('active');
   });
 });
+
+// ── Visibility toggle wiring ───────────────────────────────────
+visButtons.forEach(btn => {
+  btn.addEventListener('click', () => {
+    selectedVisibility = btn.dataset.vis;
+    visButtons.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// ── Public games list ──────────────────────────────────────────
+function renderPublicGames(list) {
+  if (!list || list.length === 0) {
+    publicGamesEmpty.classList.remove('hidden');
+    // remove any previous items
+    Array.from(publicGamesList.querySelectorAll('.public-game-item')).forEach(el => el.remove());
+    return;
+  }
+  publicGamesEmpty.classList.add('hidden');
+  Array.from(publicGamesList.querySelectorAll('.public-game-item')).forEach(el => el.remove());
+  list.forEach(g => {
+    const row = document.createElement('div');
+    row.className = 'public-game-item';
+    row.innerHTML =
+      `<span class="public-game-code">${g.code}</span>` +
+      `<span class="public-game-info">${g.playerCount} player${g.playerCount !== 1 ? 's' : ''}` +
+      ` · ${g.inProgress ? '▶ In progress' : 'In lobby'} · ${g.botDiff}</span>` +
+      `<button class="public-game-join">JOIN</button>`;
+    row.querySelector('.public-game-join').addEventListener('click', () => {
+      doJoinPublic(g.code, g.inProgress);
+    });
+    publicGamesList.appendChild(row);
+  });
+}
+
+function doJoinPublic(code, inProgress) {
+  clearError();
+  const name = inpName.value.trim() || 'Anonymous';
+  setLoading(btnJoin, true, 'Join →');
+
+  responseTimer = setTimeout(() => {
+    setLoading(btnJoin, false, 'Join →');
+    showError('Server did not respond.');
+  }, 8000);
+
+  connectSocket(() => {
+    if (inProgress) {
+      socket.emit('join_running_game', { name, roomCode: code });
+    } else {
+      inpCode.value = code;
+      socket.emit('join_lobby', { name, roomCode: code });
+    }
+  });
+}
+
+if (btnRefreshPublic) {
+  btnRefreshPublic.addEventListener('click', () => {
+    connectSocket(() => socket.emit('get_public_rooms'));
+  });
+}
 
 // ─────────────────────────────────────────────────────────────
 // ERROR / STATUS HELPERS
@@ -120,6 +185,8 @@ function setMode(m) {
     joinPanel.classList.remove('hidden');
     createPanel.classList.add('hidden');
     inpCode.focus();
+    // Request public rooms list when join tab is opened
+    connectSocket(() => socket.emit('get_public_rooms'));
   }
 
   // Reset button labels when switching
@@ -197,7 +264,7 @@ function doCreate() {
   }, 8000);
 
   connectSocket(() => {
-    socket.emit('create_lobby', { name });
+    socket.emit('create_lobby', { name, isPublic: selectedVisibility === 'public' });
   });
 }
 
@@ -340,6 +407,10 @@ function setupSocketHandlers() {
     setLoading(btnDoCreate, false, 'Create →');
     setLoading(btnJoin,     false, 'Join →');
     showError(message);
+  });
+
+  socket.on('public_rooms', (list) => {
+    renderPublicGames(list);
   });
 
   socket.on('lobby_update', ({ players }) => {

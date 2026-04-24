@@ -232,6 +232,8 @@ function revertUpgrade(ship) {
 // ─── PHYSICS ─────────────────────────────────────────────────────────────────
 function stepShip(ship, inp, now) {
   if (!ship.alive) return;
+  // EMP stun: nullify all inputs
+  if (ship._empUntil && now < ship._empUntil) inp = emptyInput();
   const ss = ship.ss;
 
   // Rotation with angular momentum
@@ -284,7 +286,8 @@ function stepShip(ship, inp, now) {
 
 function tryFire(ship, bullets, tick, now) {
   const ss = ship.ss;
-  if (bullets.filter(b=>b.ownerIndex===ship.index).length >= ss.maxBullets) return;
+  // Count only normal bullets (homing missiles have their own separate cap)
+  if (bullets.filter(b=>b.ownerIndex===ship.index && !b.homing).length >= ss.maxBullets) return;
   if (now - ship.lastShot < ss.shootCd) return;
   ship.lastShot = now;
   bullets.push({
@@ -523,11 +526,11 @@ function beamSolution(bot, target) {
 
 // Velocity-compensated beam solution for beast AI:
 // accounts for (1) bot's own velocity offsetting the bullet (vx*0.4 inherited),
-// and (2) target's drag deceleration over flight time.
+// (2) target's drag deceleration over flight time, (3) target angular drift.
 function beamSolutionComp(bot, target) {
   const bspd = Math.max(bot.ss.bulletSpd, 1);
   let t = Math.hypot(target.x - bot.x, target.y - bot.y) / bspd;
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 12; i++) {
     // Simulate target position with drag over t ticks
     const steps = Math.min(Math.round(t), 80);
     let tx = target.x, ty = target.y, tvx = target.vx, tvy = target.vy;
@@ -708,8 +711,13 @@ function botThinkBeast(bot, state, now) {
       const CLOSE = SHIP_RADIUS + BULLET_RADIUS + 26;
       if (minD < CLOSE * 2.8) {
         const threat = Math.max(0, 1 - minD / (CLOSE * 2.8));
-        const perpX  = -bvy / bspd2, perpY = bvx / bspd2;
-        const sign   = (bot.vx * perpX + bot.vy * perpY) >= 0 ? 1 : -1;
+        // Perpendicular to bullet's travel direction
+        const perpX = -bvy / bspd2, perpY = bvx / bspd2;
+        // Choose the side that takes us away from bullet trajectory
+        // (cross product of bullet-to-bot with bullet direction gives side)
+        const toBotX = bot.x - b.x, toBotY = bot.y - b.y;
+        const cross  = toBotX * (bvy / bspd2) - toBotY * (bvx / bspd2);
+        const sign   = cross >= 0 ? 1 : -1;
         dodgeX += perpX * sign * threat;
         dodgeY += perpY * sign * threat;
         dodgeLevel += threat;
@@ -1160,11 +1168,37 @@ function cleanup(socket) {
 
 io.on('connection', socket => {
 
-  socket.on('create_lobby', ({ name }) => {
+  // ── Public room list broadcast ───────────────────────────────────────────────
+  function broadcastPublicRooms() {
+    const list = Object.values(rooms)
+      .filter(r => r.isPublic)
+      .map(r => ({
+        code:        r.roomCode,
+        playerCount: r.players.length,
+        botDiff:     r.botDifficulty || 'medium',
+        inProgress:  r.gameStarted,
+      }));
+    io.emit('public_rooms', list);
+  }
+
+  socket.on('get_public_rooms', () => {
+    const list = Object.values(rooms)
+      .filter(r => r.isPublic)
+      .map(r => ({
+        code:        r.roomCode,
+        playerCount: r.players.length,
+        botDiff:     r.botDifficulty || 'medium',
+        inProgress:  r.gameStarted,
+      }));
+    socket.emit('public_rooms', list);
+  });
+
+  socket.on('create_lobby', ({ name, isPublic }) => {
     const code  = genCode();
     const pName = safeName(name);
     rooms[code] = {
       roomCode: code,
+      isPublic: !!isPublic,
       players:  [{ id:socket.id, name:pName, index:0 }],
       gameStarted: false, gameState:null, gameLoopInterval:null,
       shutdownTimer: null,
@@ -1173,6 +1207,7 @@ io.on('connection', socket => {
     socketRoom[socket.id] = code;
     socket.join(code);
     socket.emit('lobby_created', { roomCode:code, playerIndex:0, players:[{name:pName,index:0}] });
+    if (isPublic) broadcastPublicRooms();
   });
 
   socket.on('join_lobby', ({ name, roomCode }) => {
@@ -1189,6 +1224,36 @@ io.on('connection', socket => {
     const list = room.players.map(p=>({name:p.name,index:p.index}));
     socket.emit('lobby_joined', {roomCode:code, playerIndex:idx, players:list});
     io.to(code).emit('lobby_update', {players:list});
+    if (room.isPublic) broadcastPublicRooms();
+  });
+
+  // Join a running public game mid-match
+  socket.on('join_running_game', ({ name, roomCode }) => {
+    const code = String(roomCode||'').toUpperCase().trim();
+    const room = rooms[code];
+    if (!room || !room.isPublic || !room.gameStarted || !room.gameState)
+      return socket.emit('lobby_error', { message: 'Game not available.' });
+    if (room.players.length >= MAX_PLAYERS)
+      return socket.emit('lobby_error', { message: 'Room is full.' });
+    const pName = safeName(name);
+    const idx   = room.gameState.ships.length;
+    room.players.push({ id: socket.id, name: pName, index: idx });
+    socketRoom[socket.id] = code;
+    socket.join(code);
+    // Spawn a new ship in the live game
+    const ship = makeShip(socket.id, idx, pName, false);
+    room.gameState.ships.push(ship);
+    while (room.inputs.length <= idx) room.inputs.push(emptyInput());
+    socket.emit('game_start', {
+      yourIndex:   idx,
+      gameState:   cleanState(room.gameState),
+      upgradeTree: UPGRADE_TREE,
+      difficulty:  room.botDifficulty,
+      worldW:      WORLD_W,
+      worldH:      WORLD_H,
+      asteroids:   ASTEROIDS,
+    });
+    broadcastPublicRooms();
   });
 
   socket.on('start_game', ({ difficulty } = {}) => {
@@ -1302,6 +1367,91 @@ io.on('connection', socket => {
         targetIndex: tgt.index,
         missileAge: 0,
       });
+    }
+  });
+
+  // ── Thomas_ special hacks ───────────────────────────────────────────────────
+  const HACK_CDS = { dash: 2500, nova: 12000, god: 28000, warp: 8000, emp: 18000 };
+
+  socket.on('thomas_hack', ({ type }) => {
+    const code = socketRoom[socket.id];
+    const room = code && rooms[code];
+    if (!room || !room.gameState) return;
+    const pl = room.players.find(p => p.id === socket.id);
+    if (!pl) return;
+    const ship = room.gameState.ships[pl.index];
+    if (!ship || !ship.alive || !ship.isThomas) return;
+
+    if (!ship._hackCds) ship._hackCds = {};
+    const now = Date.now();
+    if ((ship._hackCds[type] || 0) > now) return; // still on cooldown
+
+    if (type === 'dash') {
+      // Hyper Dash: teleport 700px forward through walls
+      ship._hackCds.dash = now + HACK_CDS.dash;
+      const dist = 700;
+      ship.x = Math.max(50, Math.min(WORLD_W - 50, ship.x + Math.cos(ship.angle) * dist));
+      ship.y = Math.max(50, Math.min(WORLD_H - 50, ship.y + Math.sin(ship.angle) * dist));
+      ship.invincible = true; ship.invincibleUntil = now + 400;
+      io.to(code).emit('hack_effect', { type:'dash', x:ship.x, y:ship.y, ownerIndex:ship.index });
+
+    } else if (type === 'nova') {
+      // Nova Blast: annihilate everything within 480px
+      ship._hackCds.nova = now + HACK_CDS.nova;
+      const NOVA_R = 480;
+      for (const tgt of room.gameState.ships) {
+        if (tgt.index === ship.index || !tgt.alive || tgt.invincible) continue;
+        if (Math.hypot(tgt.x - ship.x, tgt.y - ship.y) < NOVA_R) {
+          const resist = (tgt.ss && tgt.ss.dmgReduce) || 0;
+          tgt.health -= Math.round(200 * (1 - resist));
+          if (tgt.health <= 0) handleDeath(tgt, ship, room.gameState, room, now);
+        }
+      }
+      // Destroy nearby bullets
+      room.gameState.bullets = room.gameState.bullets.filter(b =>
+        Math.hypot(b.x - ship.x, b.y - ship.y) >= NOVA_R * 0.7
+      );
+      io.to(code).emit('hack_effect', { type:'nova', x:ship.x, y:ship.y, r:NOVA_R, ownerIndex:ship.index });
+
+    } else if (type === 'god') {
+      // God Mode: full heal + 6s invincibility
+      ship._hackCds.god = now + HACK_CDS.god;
+      ship.health = ship.ss.health;
+      ship.invincible = true;
+      ship.invincibleUntil = now + 6000;
+      io.to(code).emit('hack_effect', { type:'god', x:ship.x, y:ship.y, ownerIndex:ship.index });
+
+    } else if (type === 'warp') {
+      // Void Warp: teleport to a random safe spot far from enemies
+      ship._hackCds.warp = now + HACK_CDS.warp;
+      let bestX = ship.x, bestY = ship.y, bestScore = -Infinity;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const cx = rnd(300, WORLD_W - 300), cy = rnd(300, WORLD_H - 300);
+        let minEnemyDist = Infinity;
+        for (const s of room.gameState.ships) {
+          if (s.index === ship.index || !s.alive) continue;
+          const d = Math.hypot(cx - s.x, cy - s.y);
+          if (d < minEnemyDist) minEnemyDist = d;
+        }
+        if (minEnemyDist > bestScore) { bestScore = minEnemyDist; bestX = cx; bestY = cy; }
+      }
+      ship.x = bestX; ship.y = bestY;
+      ship.vx = ship.vy = 0;
+      ship.invincible = true; ship.invincibleUntil = now + 800;
+      io.to(code).emit('hack_effect', { type:'warp', x:ship.x, y:ship.y, ownerIndex:ship.index });
+
+    } else if (type === 'emp') {
+      // EMP Pulse: stun all enemies (zero velocity) within 900px for 1.5s
+      ship._hackCds.emp = now + HACK_CDS.emp;
+      const EMP_R = 900;
+      for (const tgt of room.gameState.ships) {
+        if (tgt.index === ship.index || !tgt.alive) continue;
+        if (Math.hypot(tgt.x - ship.x, tgt.y - ship.y) < EMP_R) {
+          tgt.vx *= 0.05; tgt.vy *= 0.05;
+          tgt._empUntil = now + 1500;
+        }
+      }
+      io.to(code).emit('hack_effect', { type:'emp', x:ship.x, y:ship.y, r:EMP_R, ownerIndex:ship.index });
     }
   });
 
