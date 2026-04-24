@@ -199,10 +199,19 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
           e.preventDefault();
         }
         if (e.code === 'KeyI') {
-          // Fire tracking missile
-          if (_selectedTarget >= 0) {
-            _socket.emit('fire_missile', { targetIndex: _selectedTarget });
+          // Auto-target nearest if no lock; server also auto-picks if needed
+          let tid = _selectedTarget;
+          if (tid < 0) {
+            const living = serverState.ships.filter(s => s.alive && s.index !== _myIndex);
+            if (living.length > 0) {
+              let bestD = Infinity;
+              for (const s of living) {
+                const d = Math.hypot(s.x - myShip.x, s.y - myShip.y);
+                if (d < bestD) { bestD = d; tid = s.index; }
+              }
+            }
           }
+          _socket.emit('fire_missile', { targetIndex: tid });
           e.preventDefault();
         }
         if (e.code === 'KeyO') {
@@ -1282,11 +1291,11 @@ function drawHUD(state, now) {
       ctx.shadowBlur  = 8;
       ctx.font        = '11px monospace';
       ctx.fillStyle   = '#ff6622';
-      ctx.fillText('MISSILE READY [I] · SALVO [O]', 14, 140);
+      ctx.fillText('MISSILE [I] · SALVO [O]  (auto-target)', 14, 140);
       ctx.shadowBlur  = 0;
       ctx.font        = '9px monospace';
-      ctx.fillStyle   = '#332211';
-      ctx.fillText('[J] lock  [K] cycle', 14, 152);
+      ctx.fillStyle   = '#554422';
+      ctx.fillText('[J] lock nearest  [K] cycle target', 14, 152);
     }
   }
 

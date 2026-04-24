@@ -30,7 +30,7 @@ const XP_BLOCK_RESPAWN_MS = 15000;
 const ANGULAR_ACCEL  = 0.025;
 const ANGULAR_DRAG   = 0.72;
 const ANGULAR_MAX    = 0.088;
-const MISSILE_CD     = 5000;
+// MISSILE_CD removed — no cooldown on missiles
 const MISSILE_DMG    = 9999;   // one-hit kill regardless of tier/resistance
 const MISSILE_LIFE   = 400;    // longer life to let prediction play out
 const MISSILE_SPD    = 9;
@@ -1316,11 +1316,20 @@ io.on('connection', socket => {
     if (!pl) return;
     const ship = room.gameState.ships[pl.index];
     if (!ship || !ship.alive || !ship.isThomas) return;
-    const tgt = room.gameState.ships[targetIndex];
-    if (!tgt || !tgt.alive || tgt.index === ship.index) return;
-    // Cap concurrent missiles: max 3 homing bullets owned by this player at once
+    // Auto-pick nearest enemy if no valid target given
+    let tgt = room.gameState.ships[targetIndex];
+    if (!tgt || !tgt.alive || tgt.index === ship.index) {
+      let bestD = Infinity;
+      for (const s of room.gameState.ships) {
+        if (!s.alive || s.index === ship.index) continue;
+        const d = Math.hypot(s.x - ship.x, s.y - ship.y);
+        if (d < bestD) { bestD = d; tgt = s; }
+      }
+    }
+    if (!tgt || !tgt.alive) return;
+    // Cap concurrent single missiles at 10
     const activeMissiles = room.gameState.bullets.filter(b => b.homing && b.ownerIndex === ship.index).length;
-    if (activeMissiles >= 3) return;
+    if (activeMissiles >= 10) return;
     const ang = Math.atan2(tgt.y - ship.y, tgt.x - ship.x);
     room.gameState.bullets.push({
       id: nextBulletId++,
