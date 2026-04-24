@@ -36,24 +36,36 @@ const btnJoin      = $('btn-join');
 const menuError    = $('menu-error');
 
 // Lobby elements
-const lobbyHeading = $('lobby-heading');
-const codeBlock    = $('code-block');
-const roomCodeEl   = $('room-code');
-const playerListEl = $('player-list');
-const btnStart     = $('btn-start');
-const btnLobbyBack = $('btn-lobby-back');
-const lobbyStatus  = $('lobby-status');
+const lobbyHeading   = $('lobby-heading');
+const codeBlock      = $('code-block');
+const roomCodeEl     = $('room-code');
+const playerListEl   = $('player-list');
+const btnStart       = $('btn-start');
+const btnLobbyBack   = $('btn-lobby-back');
+const lobbyStatus    = $('lobby-status');
+const difficultyBlock = $('difficulty-block');
+const diffTabs        = Array.from(document.querySelectorAll('.diff-tab'));
 
 // ─────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────
 
-let socket        = null;
-let myPlayerIndex = null;
-let isHost        = false;
-let currentCode   = '';
-let mode          = 'create';    // 'create' | 'join'
-let responseTimer = null;        // timeout if server never replies
+let socket             = null;
+let myPlayerIndex      = null;
+let isHost             = false;
+let currentCode        = '';
+let mode               = 'create';    // 'create' | 'join'
+let responseTimer      = null;
+let selectedDifficulty = 'medium';
+
+// ── Difficulty tab wiring ──────────────────────────────────────
+diffTabs.forEach(btn => {
+  btn.addEventListener('click', () => {
+    selectedDifficulty = btn.dataset.diff;
+    diffTabs.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
 
 // ─────────────────────────────────────────────────────────────
 // ERROR / STATUS HELPERS
@@ -252,7 +264,7 @@ roomCodeEl.addEventListener('click', () => {
 });
 
 btnStart.addEventListener('click', () => {
-  if (!btnStart.disabled) socket.emit('start_game');
+  if (!btnStart.disabled) socket.emit('start_game', { difficulty: selectedDifficulty });
 });
 
 btnLobbyBack.addEventListener('click', () => {
@@ -280,6 +292,7 @@ function setupSocketHandlers() {
     lobbyHeading.textContent = 'Your game room';
     codeBlock.classList.remove('hidden');
     roomCodeEl.textContent = roomCode;
+    difficultyBlock.classList.remove('hidden');   // host can pick difficulty
 
     renderPlayerList(players);
     updateStartButton(players);
@@ -294,7 +307,8 @@ function setupSocketHandlers() {
     isHost        = false;
 
     lobbyHeading.textContent = `Room ${roomCode}`;
-    codeBlock.classList.add('hidden');   // guest doesn't need to share code
+    codeBlock.classList.add('hidden');
+    difficultyBlock.classList.add('hidden');      // guests don't pick difficulty
 
     renderPlayerList(players);
     updateStartButton(players);
@@ -313,10 +327,10 @@ function setupSocketHandlers() {
     updateStartButton(players);
   });
 
-  socket.on('game_start', ({ gameState, yourIndex, asteroids }) => {
+  socket.on('game_start', ({ gameState, yourIndex, asteroids, difficulty }) => {
     myPlayerIndex = yourIndex;
     showScreen('game');
-    initGame(socket, gameState, yourIndex, asteroids);
+    initGame(socket, gameState, yourIndex, asteroids, difficulty);
   });
 
   socket.on('disconnect', (reason) => {

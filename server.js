@@ -34,8 +34,43 @@ const ANGULAR_MAX    = 0.088;
 // Bot AI tuning
 const BOT_WALL_MARGIN = 390;   // px from world edge before steering away
 const BOT_AST_MARGIN  = 90;    // extra clearance around asteroids
-const BOT_RETREAT_HP  = 0.30;  // flee below this fraction of max HP
-const BOT_HUNT_RANGE  = 1000;  // engage the nearest enemy within this distance
+
+// Per-difficulty parameter sets — all other bot constants are derived from these
+const DIFF_PARAMS = {
+  easy: {
+    ticks:       22,    // decision interval (slow reactions)
+    aimTol:      0.40,  // rad — fires even when poorly aimed
+    farmAimTol:  0.50,
+    retreatHp:   0.60,  // retreats at 60 % HP (cowardly)
+    huntRange:   600,   // only engages nearby ships
+    leadFactor:  0.15,  // barely leads shots
+    jitter:      260,   // px of random noise added to aim point
+    boostHunt:   false,
+    preferHuman: false,
+  },
+  medium: {
+    ticks:       12,
+    aimTol:      0.18,
+    farmAimTol:  0.22,
+    retreatHp:   0.30,
+    huntRange:   1000,
+    leadFactor:  1.0,
+    jitter:      0,
+    boostHunt:   true,
+    preferHuman: false,
+  },
+  beast: {
+    ticks:       5,     // very fast reactions
+    aimTol:      0.08,  // pinpoint accuracy
+    farmAimTol:  0.12,
+    retreatHp:   0.10,  // almost never retreats
+    huntRange:   1800,  // hunts from far away
+    leadFactor:  1.3,   // over-leads fast targets
+    jitter:      0,
+    boostHunt:   true,
+    preferHuman: true,  // specifically hunts human players first
+  },
+};
 
 const COLORS = [
   '#00ffff','#ff00ff','#ffff00','#00ff88','#ff8844',
@@ -370,8 +405,9 @@ function tryRespawn(ship, now) {
 }
 
 // ─── BOT AI ──────────────────────────────────────────────────────────────────
-function botThink(bot, state, now) {
+function botThink(bot, state, now, difficulty) {
   if (!bot.alive) return emptyInput();
+  const p = DIFF_PARAMS[difficulty] || DIFF_PARAMS.medium;
 
   // ── Immediately apply any pending upgrade ─────────────────────────────
   if (bot.pendingUpgrade) {
@@ -396,18 +432,26 @@ function botThink(bot, state, now) {
     }
   }
 
-  // ── Re-evaluate state & target every 12 ticks (~400 ms) ──────────────
-  if (state.tick - bot._botDecision >= 12) {
+  // ── Re-evaluate state & target every p.ticks ─────────────────────────
+  if (state.tick - bot._botDecision >= p.ticks) {
     bot._botDecision = state.tick;
 
     const hpFrac = bot.health / bot.ss.health;
 
-    // Nearest living enemy
+    // Nearest living enemy (beast: prefers human players)
     let nearEnemyDist = Infinity, nearEnemy = null;
     for (const s of state.ships) {
       if (s.index === bot.index || !s.alive) continue;
       const d = Math.hypot(s.x - bot.x, s.y - bot.y);
       if (d < nearEnemyDist) { nearEnemyDist = d; nearEnemy = s; }
+    }
+    if (p.preferHuman && nearEnemy && nearEnemy.isBot) {
+      for (const s of state.ships) {
+        if (s.index === bot.index || !s.alive || s.isBot) continue;
+        nearEnemy = s;
+        nearEnemyDist = Math.hypot(s.x - bot.x, s.y - bot.y);
+        break;
+      }
     }
     // Nearest alive XP block
     let nearBlockDist = Infinity, nearBlock = null;
@@ -417,10 +461,10 @@ function botThink(bot, state, now) {
       if (d < nearBlockDist) { nearBlockDist = d; nearBlock = blk; }
     }
 
-    if (hpFrac <= BOT_RETREAT_HP && nearEnemy) {
+    if (hpFrac <= p.retreatHp && nearEnemy) {
       bot._botState  = 'retreat';
       bot._botTarget = { type: 'flee', obj: nearEnemy };
-    } else if (nearEnemy && nearEnemyDist <= BOT_HUNT_RANGE) {
+    } else if (nearEnemy && nearEnemyDist <= p.huntRange) {
       bot._botState  = 'hunt';
       bot._botTarget = { type: 'ship', obj: nearEnemy };
     } else if (nearBlock) {
@@ -450,9 +494,9 @@ function botThink(bot, state, now) {
     aimX = bot.x - (ex / ed) * 500;
     aimY = bot.y - (ey / ed) * 500;
   } else if (bot._botState === 'hunt') {
-    // Lead-shot: predict target position when bullet arrives
+    // Lead-shot: predict target position when bullet arrives, scaled by difficulty
     const dist    = Math.hypot(tgt.x - bot.x, tgt.y - bot.y);
-    const travelT = Math.min(dist / Math.max(bot.ss.bulletSpd, 1), 35);
+    const travelT = Math.min(dist / Math.max(bot.ss.bulletSpd, 1), 35) * p.leadFactor;
     aimX = tgt.x + tgt.vx * travelT;
     aimY = tgt.y + tgt.vy * travelT;
   } else {
@@ -481,6 +525,12 @@ function botThink(bot, state, now) {
     }
   }
 
+  // ── Easy-mode aim jitter (simulates human error) ─────────────────────
+  if (p.jitter > 0) {
+    aimX += (Math.random() - 0.5) * p.jitter;
+    aimY += (Math.random() - 0.5) * p.jitter;
+  }
+
   // ── Steer toward computed aim point ───────────────────────────────────
   const dx   = aimX - bot.x, dy = aimY - bot.y;
   const tgtA = Math.atan2(dy, dx);
@@ -496,14 +546,14 @@ function botThink(bot, state, now) {
 
   } else if (bot._botState === 'hunt') {
     const rawDist = Math.hypot(tgt.x - bot.x, tgt.y - bot.y);
-    if (rawDist > 300)                         inp.w = true;
-    else if (rawDist < 130)                    inp.s = true;  // reverse if too close
-    if (Math.abs(diff) < 0.18)                 inp.space = true;
-    if (rawDist > 650 && now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
+    if (rawDist > 300)                                           inp.w = true;
+    else if (rawDist < 130)                                      inp.s = true;
+    if (Math.abs(diff) < p.aimTol)                               inp.space = true;
+    if (p.boostHunt && rawDist > 650 && now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
 
   } else if (bot._botState === 'farm') {
-    if (Math.hypot(tgt.x - bot.x, tgt.y - bot.y) > 60) inp.w = true;
-    if (Math.abs(diff) < 0.22)                 inp.space = true;
+    if (Math.hypot(tgt.x - bot.x, tgt.y - bot.y) > 60)         inp.w = true;
+    if (Math.abs(diff) < p.farmAimTol)                           inp.space = true;
 
   } else { // wander
     if (Math.hypot(tgt.x - bot.x, tgt.y - bot.y) > 100) inp.w = true;
@@ -565,7 +615,7 @@ function startLoop(room) {
     // Compute inputs (human from buffer, bots from AI)
     const inputs = room.inputs.slice();
     for (const ship of state.ships) {
-      if (ship.isBot && ship.alive) inputs[ship.index] = botThink(ship, state, now);
+      if (ship.isBot && ship.alive) inputs[ship.index] = botThink(ship, state, now, room.botDifficulty);
     }
 
     for (const ship of state.ships) {
@@ -653,15 +703,16 @@ io.on('connection', socket => {
     io.to(code).emit('lobby_update', {players:list});
   });
 
-  socket.on('start_game', () => {
+  socket.on('start_game', ({ difficulty } = {}) => {
     const code = socketRoom[socket.id];
     const room = code && rooms[code];
     if (!room || room.gameStarted) return;
     const p = room.players.find(p=>p.id===socket.id);
     if (!p || p.index !== 0) return;
 
-    room.gameStarted = true;
-    room.gameState   = makeGameState(room.players);
+    room.botDifficulty = ['easy','medium','beast'].includes(difficulty) ? difficulty : 'medium';
+    room.gameStarted   = true;
+    room.gameState     = makeGameState(room.players);
     // Make sure inputs array covers all ships
     while (room.inputs.length < room.gameState.ships.length) room.inputs.push(emptyInput());
 
@@ -670,6 +721,7 @@ io.on('connection', socket => {
         yourIndex:   pl.index,
         gameState:   cleanState(room.gameState),
         upgradeTree: UPGRADE_TREE,
+        difficulty:  room.botDifficulty,
         worldW:      WORLD_W,
         worldH:      WORLD_H,
         asteroids:   ASTEROIDS,

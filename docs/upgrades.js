@@ -77,7 +77,7 @@
     maxSpd:     6,
     drag:       0.975,
     boostCd:    3500,
-    health:     3,
+    health:     5,
     regenRate:  0,   // 0 = off; otherwise regen 1 HP every (300/regenRate) ticks
     rotate:     0.088,
     dmgReduce:  0,   // 0–0.60: fraction of incoming bullet damage absorbed

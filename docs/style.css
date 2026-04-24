@@ -388,3 +388,48 @@ kbd {
 .score-row .sp1 { color: var(--cyan); }
 .score-row .sp2 { color: var(--magenta); }
 .score-row .sdiv { color: var(--muted); font-size: .78rem; }
+
+/* ═══════════════════════════════════════════
+   DIFFICULTY SELECTOR (lobby, host only)
+═══════════════════════════════════════════ */
+.difficulty-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.diff-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.diff-tab {
+  padding: 7px 18px;
+  font-family: inherit;
+  font-size: .82rem;
+  letter-spacing: .08em;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  outline: none;
+  transition: all .18s;
+}
+.diff-tab:hover:not(.active) {
+  border-color: #5050a0;
+  color: #9090c0;
+}
+.diff-tab.active {
+  background: rgba(0,255,255,.10);
+  border-color: var(--cyan);
+  color: var(--cyan);
+  text-shadow: 0 0 8px var(--cyan);
+}
+.diff-tab.beast.active {
+  background: rgba(255,68,68,.10);
+  border-color: #ff4444;
+  color: #ff4444;
+  text-shadow: 0 0 10px #ff4444;
+}

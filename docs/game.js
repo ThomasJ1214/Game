@@ -4,8 +4,8 @@
 // SHARED CONSTANTS  (must match server.js)
 // ─────────────────────────────────────────────────────────────
 
-const ARENA_W       = 800;
-const ARENA_H       = 600;
+const ARENA_W       = 960;
+const ARENA_H       = 720;
 const WORLD_W       = 9600;
 const WORLD_H       = 7200;
 const SHIP_RADIUS   = 16;
@@ -44,6 +44,7 @@ let cameraX       = 0;
 let cameraY       = 0;
 let mapAsteroids  = [];
 let killFeed      = [];
+let _difficulty   = 'medium';
 
 const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
 
@@ -51,10 +52,11 @@ const keys = { w: false, a: false, s: false, d: false, space: false, shift: fals
 // PUBLIC API  (called by lobby.js)
 // ─────────────────────────────────────────────────────────────
 
-function initGame(sock, initialState, yourIndex, asteroids) {
-  _socket     = sock;
-  _myIndex    = yourIndex;
-  serverState = initialState;
+function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
+  _socket      = sock;
+  _myIndex     = yourIndex;
+  _difficulty  = difficulty || 'medium';
+  serverState  = initialState;
   prevState   = null;
   explosions  = [];
   shockwaves  = [];
@@ -449,6 +451,28 @@ function drawXpBlock(blk) {
   ctx.restore();
 }
 
+function drawGrid() {
+  const GRID = 800;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,180,255,0.04)';
+  ctx.lineWidth   = 1;
+  const x0 = Math.floor(cameraX / GRID) * GRID;
+  const y0 = Math.floor(cameraY / GRID) * GRID;
+  for (let x = x0; x < cameraX + ARENA_W + GRID; x += GRID) {
+    ctx.beginPath();
+    ctx.moveTo(x, Math.max(0, cameraY));
+    ctx.lineTo(x, Math.min(WORLD_H, cameraY + ARENA_H));
+    ctx.stroke();
+  }
+  for (let y = y0; y < cameraY + ARENA_H + GRID; y += GRID) {
+    ctx.beginPath();
+    ctx.moveTo(Math.max(0, cameraX), y);
+    ctx.lineTo(Math.min(WORLD_W, cameraX + ARENA_W), y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawWorldBorder() {
   ctx.save();
   ctx.strokeStyle = 'rgba(0,255,255,0.08)';
@@ -491,6 +515,7 @@ function render(state, now) {
   ctx.save();
   ctx.translate(-cameraX, -cameraY);
 
+  drawGrid();
   drawWorldBorder();
   drawWorldDecorations();
   for (const ast of mapAsteroids) drawAsteroid(ast);
@@ -763,13 +788,29 @@ function drawShip(ship, now) {
   // Branch-specific extras (wings, guns, armour, shield)
   _drawBranchExtras(branch, tier, col, now, ship.index);
 
+  // High-tier aura ring (tier 5+) drawn before hull so it's behind
+  if (tier >= 5) {
+    const auraR   = SHIP_RADIUS + 8 + tier * 1.2;
+    const pulse   = 0.06 + 0.05 * Math.sin(now * 0.003 + ship.index * 0.9);
+    ctx.globalAlpha = pulse;
+    ctx.strokeStyle = col;
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = 20 + tier;
+    ctx.lineWidth   = 1.2;
+    ctx.beginPath();
+    ctx.arc(0, 0, auraR, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur  = 0;
+  }
+
   // Hull outline
   ctx.beginPath();
   _hullPath(pts);
   ctx.strokeStyle = col;
   ctx.lineWidth   = isMe ? 2.5 : 1.8;
   ctx.shadowColor = col;
-  ctx.shadowBlur  = isMe ? 22 : 11;
+  ctx.shadowBlur  = (isMe ? 22 : 11) + tier * 1.5;
   ctx.stroke();
 
   // Cockpit dot near nose
@@ -783,6 +824,19 @@ function drawShip(ship, now) {
   ctx.globalAlpha = 1;
 
   ctx.restore();
+
+  // Tier badge above ship (tier 1+)
+  if (tier >= 1) {
+    ctx.save();
+    const tierCol = tier >= 8 ? '#ffdd00' : tier >= 5 ? col : col;
+    ctx.font        = `bold 9px monospace`;
+    ctx.fillStyle   = tierCol;
+    ctx.shadowColor = tierCol;
+    ctx.shadowBlur  = tier >= 5 ? 10 : 4;
+    ctx.textAlign   = 'center';
+    ctx.fillText(`T${tier}`, ship.x, ship.y - 38);
+    ctx.restore();
+  }
 
   // Name tag
   ctx.save();
@@ -812,8 +866,8 @@ function drawHUD(state, now) {
     ctx.shadowBlur  = 5;
     ctx.textAlign   = 'left';
     ctx.fillText(myShip.name + ' ◄', 12, 22);
-    drawHearts(12, 36, myShip.health, col, 'left');
-    drawBoostBar(12, 50, myShip.lastBoost || 0, (myShip.ss && myShip.ss.boostCd) || 3500, col, 'left');
+    drawHearts(12, 36, myShip.health, myShip.maxHealth || 5, col, 'left');
+    drawBoostBar(12, 52, myShip.lastBoost || 0, (myShip.ss && myShip.ss.boostCd) || 3500, col, 'left');
     // XP progress bar
     const xpPer = (window.XP_PER_TIER || 150);
     const xpNeeded = (myShip.tier + 1) * xpPer;
@@ -821,17 +875,26 @@ function drawHUD(state, now) {
     const barW = 54, barH = 4, bx = 12;
     ctx.shadowBlur = 0;
     ctx.fillStyle  = '#111128';
-    ctx.fillRect(bx, 66, barW, barH);
+    ctx.fillRect(bx, 72, barW, barH);
     ctx.fillStyle  = col;
     ctx.shadowColor = col;
     ctx.shadowBlur  = xpFill >= 1 ? 6 : 0;
-    ctx.fillRect(bx, 66, barW * xpFill, barH);
+    ctx.fillRect(bx, 72, barW * xpFill, barH);
     ctx.shadowBlur = 0;
     ctx.font       = '8px monospace';
     ctx.fillStyle  = myShip.tier >= 10 ? col : '#33335a';
     ctx.textAlign  = 'left';
     const tierLabel = myShip.tier >= 10 ? 'MAX TIER' : `T${myShip.tier} · ${myShip.xp}/${xpNeeded} XP`;
-    ctx.fillText(tierLabel, 12, 82);
+    ctx.fillText(tierLabel, 12, 88);
+    // Difficulty label
+    const diffLabel = { easy: 'EASY', medium: 'MED', beast: 'BEAST' }[_difficulty] || '';
+    const diffCol   = _difficulty === 'beast' ? '#ff4444' : _difficulty === 'easy' ? '#44ff88' : '#4488ff';
+    ctx.font        = '8px monospace';
+    ctx.fillStyle   = diffCol;
+    ctx.shadowColor = diffCol;
+    ctx.shadowBlur  = 3;
+    ctx.fillText(`BOTS: ${diffLabel}`, 12, 100);
+    ctx.shadowBlur  = 0;
   }
 
   // Upgrade panel (shown when pendingUpgrade, takes full focus)
@@ -861,12 +924,8 @@ function drawHUD(state, now) {
   // Leaderboard — top right
   drawLeaderboard(state);
 
-  // Controls hint — bottom right
-  ctx.shadowBlur  = 0;
-  ctx.font        = '10px monospace';
-  ctx.fillStyle   = '#2c2c50';
-  ctx.textAlign   = 'right';
-  ctx.fillText('[?] controls', ARENA_W - 8, ARENA_H - 8);
+  // Minimap — bottom right
+  drawMinimap(state);
 
   ctx.restore();
 }
@@ -997,6 +1056,55 @@ function drawUpgradePanel(state) {
   ctx.restore();
 }
 
+function drawMinimap(state) {
+  const MW = 168, MH = 126;
+  const MX = ARENA_W - MW - 8, MY = ARENA_H - MH - 8;
+  const sx = MW / WORLD_W, sy = MH / WORLD_H;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,18,0.75)';
+  ctx.fillRect(MX, MY, MW, MH);
+  ctx.strokeStyle = 'rgba(0,200,200,0.25)';
+  ctx.lineWidth   = 1;
+  ctx.strokeRect(MX, MY, MW, MH);
+
+  // Viewport rect
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+  ctx.lineWidth   = 0.8;
+  ctx.strokeRect(MX + cameraX * sx, MY + cameraY * sy, ARENA_W * sx, ARENA_H * sy);
+
+  // XP blocks
+  if (state.xpBlocks) {
+    for (const blk of state.xpBlocks) {
+      ctx.fillStyle = `hsla(${blk.hue},100%,65%,0.5)`;
+      ctx.fillRect(MX + blk.x * sx - 0.8, MY + blk.y * sy - 0.8, 1.6, 1.6);
+    }
+  }
+
+  // Ships
+  for (const ship of state.ships) {
+    if (!ship.alive) continue;
+    const col  = COLORS[ship.index % COLORS.length];
+    const isMe = ship.index === _myIndex;
+    ctx.fillStyle   = col;
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = isMe ? 8 : 0;
+    ctx.beginPath();
+    ctx.arc(MX + ship.x * sx, MY + ship.y * sy, isMe ? 3.5 : 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Label
+  ctx.shadowBlur  = 0;
+  ctx.globalAlpha = 0.35;
+  ctx.font        = '8px monospace';
+  ctx.fillStyle   = '#88aacc';
+  ctx.textAlign   = 'right';
+  ctx.fillText('[?] controls', MX + MW - 4, MY + MH - 3);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 function drawKillFeed() {
   const now = Date.now();
   killFeed = killFeed.filter(k => now - k.at < 5000);
@@ -1057,14 +1165,17 @@ function drawLeaderboard(state) {
 // DRAW: HEARTS
 // ─────────────────────────────────────────────────────────────
 
-function drawHearts(x, y, health, color, align) {
-  ctx.font        = '14px monospace';
+function drawHearts(x, y, health, maxHealth, color, align) {
+  const max     = maxHealth || 5;
+  const spacing = Math.min(16, Math.floor(90 / max));
+  ctx.font        = '12px monospace';
   ctx.shadowColor = color;
   ctx.shadowBlur  = 5;
   ctx.textAlign   = align;
-  for (let i = 0; i < 3; i++) {
-    ctx.fillStyle = (align === 'left' ? i : 2 - i) < health ? color : '#1c1c38';
-    const offset  = align === 'left' ? i * 18 : -i * 18;
+  for (let i = 0; i < max; i++) {
+    const filled  = (align === 'left' ? i : max - 1 - i) < health;
+    ctx.fillStyle = filled ? color : '#1c1c38';
+    const offset  = align === 'left' ? i * spacing : -i * spacing;
     ctx.fillText('♥', x + offset, y);
   }
 }

@@ -60,6 +60,16 @@
 
     <p id="lobby-status" class="muted">Waiting for opponent to join…</p>
 
+    <!-- Bot difficulty (host only) -->
+    <div id="difficulty-block" class="difficulty-block hidden">
+      <p class="hint">Bot difficulty</p>
+      <div class="diff-tabs">
+        <button class="diff-tab" data-diff="easy">Easy</button>
+        <button class="diff-tab active" data-diff="medium">Medium</button>
+        <button class="diff-tab beast" data-diff="beast">⚡ Beast</button>
+      </div>
+    </div>
+
     <div class="row gap mt">
       <button id="btn-start" class="btn-neon" disabled>Start Game</button>
       <button id="btn-lobby-back" class="btn-ghost">Leave</button>
@@ -71,7 +81,7 @@
   ═══════════════════════════════════════════ -->
   <div id="screen-game" class="screen">
     <div class="canvas-wrap">
-      <canvas id="canvas" width="800" height="600"></canvas>
+      <canvas id="canvas" width="960" height="720"></canvas>
 
       <!-- Controls help overlay -->
       <div id="help-overlay" class="overlay-panel">
