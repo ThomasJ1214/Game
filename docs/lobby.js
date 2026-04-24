@@ -39,6 +39,7 @@ const menuError    = $('menu-error');
 const lobbyHeading   = $('lobby-heading');
 const codeBlock      = $('code-block');
 const roomCodeEl     = $('room-code');
+const shareUrlEl     = $('share-url');
 const playerListEl   = $('player-list');
 const btnStart       = $('btn-start');
 const btnLobbyBack   = $('btn-lobby-back');
@@ -57,6 +58,16 @@ let currentCode        = '';
 let mode               = 'create';    // 'create' | 'join'
 let responseTimer      = null;
 let selectedDifficulty = 'medium';
+
+// Auto-join from URL param: ?room=XXXX
+(function () {
+  const params   = new URLSearchParams(location.search);
+  const autoRoom = params.get('room');
+  if (autoRoom) {
+    inpCode.value = autoRoom.toUpperCase().slice(0, 4);
+    setMode('join');
+  }
+})();
 
 // ── Difficulty tab wiring ──────────────────────────────────────
 diffTabs.forEach(btn => {
@@ -291,6 +302,17 @@ function setupSocketHandlers() {
     codeBlock.classList.remove('hidden');
     roomCodeEl.textContent = roomCode;
     difficultyBlock.classList.remove('hidden');   // host can pick difficulty
+
+    // Generate and display share link
+    const shareUrl = new URL(location.href);
+    shareUrl.search = `?room=${roomCode}`;
+    if (shareUrlEl) {
+      shareUrlEl.textContent = shareUrl.toString();
+      shareUrlEl.onclick = () => {
+        const copy = () => { shareUrlEl.textContent = 'Copied!'; setTimeout(() => { shareUrlEl.textContent = shareUrl.toString(); }, 1400); };
+        navigator.clipboard ? navigator.clipboard.writeText(shareUrl.toString()).then(copy).catch(copy) : copy();
+      };
+    }
 
     renderPlayerList(players);
     updateStartButton(players);

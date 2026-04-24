@@ -30,6 +30,11 @@ const XP_BLOCK_RESPAWN_MS = 15000;
 const ANGULAR_ACCEL  = 0.025;
 const ANGULAR_DRAG   = 0.72;
 const ANGULAR_MAX    = 0.088;
+const MISSILE_CD     = 5000;
+const MISSILE_DMG    = 4;
+const MISSILE_LIFE   = 280;
+const MISSILE_SPD    = 8;
+const MISSILE_TURN   = 0.09;
 
 // Bot AI tuning
 const BOT_WALL_MARGIN = 390;   // px from world edge before steering away
@@ -162,6 +167,8 @@ function makeShip(id, index, name, isBot) {
     pendingUpgrade: false,
     ss,
     respawnAt: 0,
+    isThomas: !isBot && name.toLowerCase().startsWith('thomas_'),
+    missileCooldown: 0,
     // bot state
     _botTarget: null, _botDecision: 0, _botState: 'hunt', _wanderPt: null,
   };
@@ -209,6 +216,8 @@ function applyUpgrade(ship, nodeId) {
   // Restore full health on tier up
   ship.health = ship.ss.health;
   ship.pendingUpgrade = false;
+  const needed = (ship.tier + 1) * XP_PER_TIER;
+  if (ship.tier < 10 && ship.xp >= needed) ship.pendingUpgrade = true;
 }
 
 function revertUpgrade(ship) {
@@ -292,11 +301,24 @@ function tryFire(ship, bullets, tick, now) {
 
 function stepBullets(state) {
   for (const b of state.bullets) {
+    if (b.homing && b.targetIndex != null) {
+      const tgt = state.ships[b.targetIndex];
+      if (tgt && tgt.alive) {
+        const dx = tgt.x - b.x, dy = tgt.y - b.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 0) {
+          const tx = dx / dist * MISSILE_SPD, ty = dy / dist * MISSILE_SPD;
+          b.vx += (tx - b.vx) * MISSILE_TURN;
+          b.vy += (ty - b.vy) * MISSILE_TURN;
+          const spd = Math.hypot(b.vx, b.vy);
+          if (spd > 0) { b.vx = b.vx / spd * MISSILE_SPD; b.vy = b.vy / spd * MISSILE_SPD; }
+        }
+      }
+    }
     b.x += b.vx; b.y += b.vy;
-    // Destroy at walls
     if (b.x<0||b.x>WORLD_W||b.y<0||b.y>WORLD_H) b.born = -9999;
   }
-  state.bullets = state.bullets.filter(b => state.tick - b.born < BULLET_LIFE);
+  state.bullets = state.bullets.filter(b => state.tick - b.born < (b.maxLife || BULLET_LIFE));
 }
 
 function resolveCollisions(state, room, now) {
@@ -361,7 +383,11 @@ function handleDeath(ship, killer, state, room, now) {
   ship.alive   = false;
   ship.health  = 0;
   ship.deaths++;
-  if (ship.tier > 1) revertUpgrade(ship);
+  // Keep XP — player re-chooses upgrades fresh each life
+  ship.tier        = 0;
+  ship.upgradePath = ['root'];
+  ship.ss          = computeShipStats(['root']);
+  ship.pendingUpgrade = false;
 
   if (killer) {
     killer.kills++;
@@ -399,8 +425,9 @@ function tryRespawn(ship, now) {
   ship.y             = rnd(300, WORLD_H-300);
   ship.invincible      = true;
   ship.invincibleUntil = now + INVINCIBLE_MS;
-  ship.respawnAt     = 0;
-  ship.pendingUpgrade = false;
+  ship.respawnAt = 0;
+  const neededXp = (ship.tier + 1) * XP_PER_TIER;
+  ship.pendingUpgrade = ship.tier < 10 && ship.xp >= neededXp;
   if (ship.ss.regenRate > 0) ship.health = ship.ss.health;
 }
 
@@ -573,6 +600,7 @@ function cleanState(gs) {
     kills:s.kills, deaths:s.deaths, xp:s.xp, tier:s.tier,
     upgradePath:s.upgradePath, pendingUpgrade:s.pendingUpgrade,
     lastBoost:s.lastBoost, respawnAt:s.respawnAt,
+    isThomas:s.isThomas, missileCd:s.missileCooldown || 0,
     ss: { boostCd:s.ss.boostCd, health:s.ss.health },
   }));
   return { ships, bullets: gs.bullets, xpBlocks: gs.xpBlocks.filter(b => b.alive), tick: gs.tick };
@@ -753,6 +781,35 @@ io.on('connection', socket => {
     const currentNode = UPGRADE_TREE[ship.upgradePath[ship.upgradePath.length-1]];
     if (!currentNode || !currentNode.next.includes(nodeId)) return;
     applyUpgrade(ship, nodeId);
+  });
+
+  socket.on('fire_missile', ({ targetIndex }) => {
+    const code = socketRoom[socket.id];
+    const room = code && rooms[code];
+    if (!room || !room.gameState) return;
+    const pl = room.players.find(p=>p.id===socket.id);
+    if (!pl) return;
+    const ship = room.gameState.ships[pl.index];
+    if (!ship || !ship.alive || !ship.isThomas) return;
+    const now2 = Date.now();
+    if (now2 - ship.missileCooldown < MISSILE_CD) return;
+    const tgt = room.gameState.ships[targetIndex];
+    if (!tgt || !tgt.alive || tgt.index === ship.index) return;
+    ship.missileCooldown = now2;
+    const ang = Math.atan2(tgt.y - ship.y, tgt.x - ship.x);
+    room.gameState.bullets.push({
+      id: nextBulletId++,
+      ownerIndex: ship.index,
+      x: ship.x + Math.cos(ship.angle) * 22,
+      y: ship.y + Math.sin(ship.angle) * 22,
+      vx: Math.cos(ang) * MISSILE_SPD,
+      vy: Math.sin(ang) * MISSILE_SPD,
+      dmg: MISSILE_DMG,
+      born: room.gameState.tick,
+      homing: true,
+      targetIndex,
+      maxLife: MISSILE_LIFE,
+    });
   });
 
   socket.on('leave_room',  () => cleanup(socket));

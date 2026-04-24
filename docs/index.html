@@ -13,7 +13,7 @@
   ═══════════════════════════════════════════ -->
   <div id="screen-menu" class="screen active">
     <h1 class="logo">PIXEL DUEL</h1>
-    <p class="tagline">2-player · space arena · real-time</p>
+    <p class="tagline">up to 15 players · bots · real-time space arena</p>
 
     <div class="card">
       <label for="inp-name">Your callsign</label>
@@ -53,7 +53,8 @@
     <div id="code-block" class="code-block hidden">
       <p class="hint">Share this code with your friend:</p>
       <div id="room-code" class="room-code" title="Click to copy">----</div>
-      <p class="hint small">Click to copy &nbsp;·&nbsp; or share the URL below</p>
+      <p class="hint small">Click code to copy &nbsp;·&nbsp; or share the link below</p>
+      <p id="share-url" class="hint small" style="cursor:pointer;color:#ffff44;letter-spacing:.02em;word-break:break-all">(generating link…)</p>
     </div>
 
     <div id="player-list" class="player-list"></div>
@@ -90,11 +91,13 @@
           <tr><td class="key">W / ↑</td><td>Thrust forward</td></tr>
           <tr><td class="key">A D / ← →</td><td>Rotate left / right</td></tr>
           <tr><td class="key">S / ↓</td><td>Reverse thrust</td></tr>
-          <tr><td class="key">SHIFT</td><td>Boost (3.5 s cooldown)</td></tr>
+          <tr><td class="key">SHIFT</td><td>Boost (cooldown varies)</td></tr>
           <tr><td class="key">SPACE</td><td>Fire</td></tr>
+          <tr><td class="key">U</td><td>Open upgrade menu</td></tr>
+          <tr><td class="key">1 / 2 / 3</td><td>Pick upgrade (when menu open)</td></tr>
           <tr><td class="key">?</td><td>Toggle this menu</td></tr>
         </table>
-        <p class="goal">Destroy ships to earn XP. Upgrade to dominate!</p>
+        <p class="goal">Earn XP → press <b>[U]</b> to upgrade → die → repeat with saved XP!</p>
         <p class="hint small">Fading in 3 s &nbsp;·&nbsp; press <kbd>?</kbd> to re-open</p>
       </div>
 

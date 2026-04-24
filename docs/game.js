@@ -42,9 +42,12 @@ let shakeAmount   = 0;
 let lastInputSend = 0;
 let cameraX       = 0;
 let cameraY       = 0;
-let mapAsteroids  = [];
-let killFeed      = [];
-let _difficulty   = 'medium';
+let mapAsteroids    = [];
+let killFeed        = [];
+let _difficulty     = 'medium';
+let _upgradeOpen    = false;
+let _selectedTarget = -1;
+let _isThomas       = false;
 
 const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
 
@@ -53,18 +56,23 @@ const keys = { w: false, a: false, s: false, d: false, space: false, shift: fals
 // ─────────────────────────────────────────────────────────────
 
 function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
-  _socket      = sock;
-  _myIndex     = yourIndex;
-  _difficulty  = difficulty || 'medium';
-  serverState  = initialState;
-  prevState   = null;
-  explosions  = [];
-  shockwaves  = [];
-  boostTrail  = [];
-  shakeAmount = 0;
-  cameraX     = 0;
-  cameraY     = 0;
+  _socket         = sock;
+  _myIndex        = yourIndex;
+  _difficulty     = difficulty || 'medium';
+  serverState     = initialState;
+  prevState       = null;
+  explosions      = [];
+  shockwaves      = [];
+  boostTrail      = [];
+  shakeAmount     = 0;
+  cameraX         = 0;
+  cameraY         = 0;
+  _upgradeOpen    = false;
+  _selectedTarget = -1;
   generation++;
+
+  const mySelf = initialState && initialState.ships && initialState.ships[yourIndex];
+  _isThomas = mySelf ? mySelf.name.toLowerCase().startsWith('thomas_') : false;
 
   // Precompute crater visuals for each asteroid
   mapAsteroids = (asteroids || []).map(ast => {
@@ -116,16 +124,56 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') keys.shift = true;
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
     if (e.key  === '?') toggleHelp();
-    // Upgrade selection: 1/2 for binary choices, 3 for root branch selection
+
     if (serverState && _socket) {
       const myShip = serverState.ships[_myIndex];
-      if (myShip && myShip.pendingUpgrade && myShip.upgradePath) {
+
+      // Toggle upgrade menu
+      if (e.code === 'KeyU' && myShip && myShip.pendingUpgrade) {
+        _upgradeOpen = !_upgradeOpen;
+        e.preventDefault();
+      }
+
+      // Upgrade selection (only when menu is open)
+      if (_upgradeOpen && myShip && myShip.pendingUpgrade && myShip.upgradePath) {
         const lastId  = myShip.upgradePath[myShip.upgradePath.length - 1];
         const node    = window.UPGRADE_TREE && window.UPGRADE_TREE[lastId];
         const choices = node ? node.next : [];
-        if (e.key === '1' && choices[0]) _socket.emit('choose_upgrade', { nodeId: choices[0] });
-        if (e.key === '2' && choices[1]) _socket.emit('choose_upgrade', { nodeId: choices[1] });
-        if (e.key === '3' && choices[2]) _socket.emit('choose_upgrade', { nodeId: choices[2] });
+        if (e.key === '1' && choices[0]) { _socket.emit('choose_upgrade', { nodeId: choices[0] }); _upgradeOpen = false; }
+        if (e.key === '2' && choices[1]) { _socket.emit('choose_upgrade', { nodeId: choices[1] }); _upgradeOpen = false; }
+        if (e.key === '3' && choices[2]) { _socket.emit('choose_upgrade', { nodeId: choices[2] }); _upgradeOpen = false; }
+      }
+
+      // Thomas_ special controls
+      if (_isThomas && myShip && myShip.alive) {
+        const living = serverState.ships.filter(s => s.alive && s.index !== _myIndex);
+        if (e.code === 'KeyJ') {
+          // Select nearest enemy
+          if (living.length > 0) {
+            let best = -1, bestD = Infinity;
+            for (const s of living) {
+              const d = Math.hypot(s.x - myShip.x, s.y - myShip.y);
+              if (d < bestD) { bestD = d; best = s.index; }
+            }
+            _selectedTarget = best;
+          }
+          e.preventDefault();
+        }
+        if (e.code === 'KeyK') {
+          // Cycle through living ships
+          if (living.length > 0) {
+            const cur = living.findIndex(s => s.index === _selectedTarget);
+            _selectedTarget = living[(cur + 1) % living.length].index;
+          }
+          e.preventDefault();
+        }
+        if (e.code === 'KeyI') {
+          // Fire tracking missile
+          if (_selectedTarget >= 0) {
+            _socket.emit('fire_missile', { targetIndex: _selectedTarget });
+          }
+          e.preventDefault();
+        }
       }
     }
   };
@@ -524,9 +572,15 @@ function render(state, now) {
   updateDrawExplosions();
   tickBoostTrail(state);
 
-  for (const b of state.bullets) drawBullet(b);
+  for (const b of state.bullets) b.homing ? drawMissile(b, state) : drawBullet(b);
   for (const ship of state.ships) {
     if (ship.alive) drawShip(ship, now);
+  }
+
+  // Thomas_ target lock reticle
+  if (_isThomas && _selectedTarget >= 0) {
+    const tgt = state.ships[_selectedTarget];
+    if (tgt && tgt.alive) drawTargetReticle(tgt.x, tgt.y, now);
   }
 
   ctx.restore();
@@ -574,6 +628,70 @@ function drawBullet(b) {
   ctx.beginPath();
   ctx.arc(b.x, b.y, BULLET_RADIUS * 0.55, 0, Math.PI * 2);
   ctx.fill();
+
+  ctx.restore();
+}
+
+function drawMissile(b, state) {
+  ctx.save();
+  const col = '#ff4400';
+
+  // Long homing trail
+  for (let t = 8; t >= 1; t--) {
+    ctx.globalAlpha = ((9 - t) / 9) * 0.22;
+    ctx.fillStyle   = col;
+    ctx.beginPath();
+    ctx.arc(b.x - b.vx * t * 1.6, b.y - b.vy * t * 1.6, (BULLET_RADIUS + 2) * (1 - t * 0.1), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Glowing body
+  ctx.globalAlpha = 1;
+  ctx.shadowColor = col;
+  ctx.shadowBlur  = 28;
+  ctx.fillStyle   = col;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, BULLET_RADIUS + 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // White-hot core
+  ctx.shadowBlur = 12;
+  ctx.fillStyle  = '#ffeeaa';
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, BULLET_RADIUS * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawTargetReticle(x, y, now) {
+  const pulse = 0.5 + 0.5 * Math.sin(now * 0.008);
+  const r     = 26 + pulse * 6;
+  ctx.save();
+  ctx.strokeStyle = '#ff4400';
+  ctx.shadowColor = '#ff4400';
+  ctx.shadowBlur  = 14;
+  ctx.lineWidth   = 1.5;
+  ctx.globalAlpha = 0.55 + pulse * 0.35;
+
+  // Corner brackets
+  const b = 10;
+  for (let s = -1; s <= 1; s += 2) {
+    for (let t = -1; t <= 1; t += 2) {
+      ctx.beginPath();
+      ctx.moveTo(x + s * r, y + t * r - t * b);
+      ctx.lineTo(x + s * r, y + t * r);
+      ctx.lineTo(x + s * r - s * b, y + t * r);
+      ctx.stroke();
+    }
+  }
+
+  // Cross hairs
+  ctx.globalAlpha = 0.2;
+  ctx.beginPath(); ctx.moveTo(x - r - 8, y); ctx.lineTo(x - r + 4, y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + r + 8, y); ctx.lineTo(x + r - 4, y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y - r - 8); ctx.lineTo(x, y - r + 4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y + r + 8); ctx.lineTo(x, y + r - 4); ctx.stroke();
 
   ctx.restore();
 }
@@ -860,44 +978,82 @@ function drawHUD(state, now) {
   const myShip = state.ships[_myIndex];
   if (myShip) {
     const col = COLORS[_myIndex % COLORS.length];
-    ctx.font        = 'bold 12px monospace';
+    ctx.font        = 'bold 14px monospace';
     ctx.fillStyle   = col;
     ctx.shadowColor = col;
-    ctx.shadowBlur  = 5;
+    ctx.shadowBlur  = 6;
     ctx.textAlign   = 'left';
-    ctx.fillText(myShip.name + ' ◄', 12, 22);
-    drawHearts(12, 36, myShip.health, myShip.maxHealth || 5, col, 'left');
-    drawBoostBar(12, 52, myShip.lastBoost || 0, (myShip.ss && myShip.ss.boostCd) || 3500, col, 'left');
+    ctx.fillText(myShip.name + ' ◄', 14, 26);
+
+    drawHearts(14, 44, myShip.health, myShip.maxHealth || 5, col, 'left');
+    drawBoostBar(14, 62, myShip.lastBoost || 0, (myShip.ss && myShip.ss.boostCd) || 3500, col, 'left');
+
     // XP progress bar
-    const xpPer = (window.XP_PER_TIER || 150);
+    const xpPer    = (window.XP_PER_TIER || 150);
     const xpNeeded = (myShip.tier + 1) * xpPer;
     const xpFill   = myShip.tier >= 10 ? 1 : Math.min(1, myShip.xp / xpNeeded);
-    const barW = 54, barH = 4, bx = 12;
-    ctx.shadowBlur = 0;
-    ctx.fillStyle  = '#111128';
-    ctx.fillRect(bx, 72, barW, barH);
-    ctx.fillStyle  = col;
+    const barW = 70, barH = 5, bx = 14;
+    ctx.shadowBlur  = 0;
+    ctx.fillStyle   = '#111128';
+    ctx.fillRect(bx, 82, barW, barH);
+    ctx.fillStyle   = col;
     ctx.shadowColor = col;
-    ctx.shadowBlur  = xpFill >= 1 ? 6 : 0;
-    ctx.fillRect(bx, 72, barW * xpFill, barH);
-    ctx.shadowBlur = 0;
-    ctx.font       = '8px monospace';
-    ctx.fillStyle  = myShip.tier >= 10 ? col : '#33335a';
-    ctx.textAlign  = 'left';
-    const tierLabel = myShip.tier >= 10 ? 'MAX TIER' : `T${myShip.tier} · ${myShip.xp}/${xpNeeded} XP`;
-    ctx.fillText(tierLabel, 12, 88);
+    ctx.shadowBlur  = xpFill >= 1 ? 7 : 0;
+    ctx.fillRect(bx, 82, barW * xpFill, barH);
+    ctx.shadowBlur  = 0;
+    ctx.font        = '10px monospace';
+    ctx.fillStyle   = myShip.tier >= 10 ? col : '#44446a';
+    ctx.textAlign   = 'left';
+    const tierLabel = myShip.tier >= 10 ? 'MAX TIER' : `T${myShip.tier}  ${myShip.xp} / ${xpNeeded} XP`;
+    ctx.fillText(tierLabel, 14, 100);
+
     // Difficulty label
     const diffLabel = { easy: 'EASY', medium: 'MED', beast: 'BEAST' }[_difficulty] || '';
     const diffCol   = _difficulty === 'beast' ? '#ff4444' : _difficulty === 'easy' ? '#44ff88' : '#4488ff';
-    ctx.font        = '8px monospace';
+    ctx.font        = '10px monospace';
     ctx.fillStyle   = diffCol;
     ctx.shadowColor = diffCol;
     ctx.shadowBlur  = 3;
-    ctx.fillText(`BOTS: ${diffLabel}`, 12, 100);
+    ctx.fillText(`BOTS: ${diffLabel}`, 14, 114);
     ctx.shadowBlur  = 0;
+
+    // Thomas_ missile bar
+    if (_isThomas) {
+      const nowMs  = Date.now();
+      const elap   = nowMs - (myShip.missileCd || 0);
+      const mReady = elap >= 5000;
+      const mFill  = Math.min(1, elap / 5000);
+      ctx.fillStyle  = '#111128';
+      ctx.fillRect(14, 124, barW, barH);
+      ctx.fillStyle  = mReady ? '#ff4400' : '#331100';
+      if (mReady) { ctx.shadowColor = '#ff4400'; ctx.shadowBlur = 6; }
+      ctx.fillRect(14, 124, barW * mFill, barH);
+      ctx.shadowBlur = 0;
+      ctx.font       = '10px monospace';
+      ctx.fillStyle  = mReady ? '#ff6622' : '#442211';
+      ctx.fillText(mReady ? 'MISSILE READY [I]' : `missile ${((5000 - elap) / 1000).toFixed(1)}s`, 14, 140);
+      ctx.font       = '9px monospace';
+      ctx.fillStyle  = '#332211';
+      ctx.fillText('[J] lock  [K] cycle', 14, 152);
+    }
   }
 
-  // Upgrade panel (shown when pendingUpgrade, takes full focus)
+  // Upgrade available banner (top centre, pulsing)
+  if (myShip && myShip.pendingUpgrade && !_upgradeOpen) {
+    const pulse = 0.65 + 0.35 * Math.sin(Date.now() * 0.005);
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.textAlign   = 'center';
+    ctx.font        = 'bold 15px monospace';
+    ctx.fillStyle   = '#ffff44';
+    ctx.shadowColor = '#ffff44';
+    ctx.shadowBlur  = 18;
+    ctx.fillText('⬆  UPGRADE READY  —  press [U]', ARENA_W / 2, 28);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  // Upgrade panel (only when [U] was pressed)
   drawUpgradePanel(state);
 
   // Respawn countdown overlay
@@ -942,8 +1098,9 @@ const BRANCH_DESCS  = {
 };
 
 function drawUpgradePanel(state) {
+  if (!_upgradeOpen) return;
   const myShip = state.ships[_myIndex];
-  if (!myShip || !myShip.pendingUpgrade || !myShip.upgradePath) return;
+  if (!myShip || !myShip.pendingUpgrade || !myShip.upgradePath) { _upgradeOpen = false; return; }
 
   const tree    = window.UPGRADE_TREE;
   if (!tree) return;
@@ -978,6 +1135,16 @@ function drawUpgradePanel(state) {
   ctx.fillStyle = '#6666aa';
   ctx.shadowBlur = 0;
   ctx.fillText('Press 1 / 2' + (choices.length > 2 ? ' / 3' : ''), ARENA_W / 2, headerY + 14);
+
+  // Thomas_-only missile note
+  if (_isThomas) {
+    ctx.font      = '9px monospace';
+    ctx.fillStyle = '#ff6622';
+    ctx.shadowColor = '#ff4400';
+    ctx.shadowBlur  = 4;
+    ctx.fillText('✦ TRACKING MISSILE: [J] lock  [K] cycle  [I] fire', ARENA_W / 2, headerY + 30);
+    ctx.shadowBlur = 0;
+  }
 
   choices.forEach((id, idx) => {
     const cn   = tree[id];
@@ -1057,8 +1224,8 @@ function drawUpgradePanel(state) {
 }
 
 function drawMinimap(state) {
-  const MW = 168, MH = 126;
-  const MX = ARENA_W - MW - 8, MY = ARENA_H - MH - 8;
+  const MW = 240, MH = 180;
+  const MX = ARENA_W - MW - 10, MY = ARENA_H - MH - 10;
   const sx = MW / WORLD_W, sy = MH / WORLD_H;
 
   ctx.save();
@@ -1084,23 +1251,31 @@ function drawMinimap(state) {
   // Ships
   for (const ship of state.ships) {
     if (!ship.alive) continue;
-    const col  = COLORS[ship.index % COLORS.length];
-    const isMe = ship.index === _myIndex;
+    const col    = COLORS[ship.index % COLORS.length];
+    const isMe   = ship.index === _myIndex;
+    const isLock = _isThomas && ship.index === _selectedTarget;
     ctx.fillStyle   = col;
     ctx.shadowColor = col;
-    ctx.shadowBlur  = isMe ? 8 : 0;
+    ctx.shadowBlur  = isMe ? 10 : isLock ? 12 : 0;
     ctx.beginPath();
-    ctx.arc(MX + ship.x * sx, MY + ship.y * sy, isMe ? 3.5 : 2, 0, Math.PI * 2);
+    ctx.arc(MX + ship.x * sx, MY + ship.y * sy, isMe ? 4.5 : isLock ? 4 : 2.5, 0, Math.PI * 2);
     ctx.fill();
+    if (isLock) {
+      ctx.strokeStyle = '#ff4400';
+      ctx.lineWidth   = 1.2;
+      ctx.beginPath();
+      ctx.arc(MX + ship.x * sx, MY + ship.y * sy, 7, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   // Label
   ctx.shadowBlur  = 0;
-  ctx.globalAlpha = 0.35;
-  ctx.font        = '8px monospace';
+  ctx.globalAlpha = 0.4;
+  ctx.font        = '9px monospace';
   ctx.fillStyle   = '#88aacc';
   ctx.textAlign   = 'right';
-  ctx.fillText('[?] controls', MX + MW - 4, MY + MH - 3);
+  ctx.fillText('[?] controls', MX + MW - 5, MY + MH - 4);
   ctx.globalAlpha = 1;
   ctx.restore();
 }
@@ -1109,28 +1284,28 @@ function drawKillFeed() {
   const now = Date.now();
   killFeed = killFeed.filter(k => now - k.at < 5000);
   if (!killFeed.length) return;
-  ctx.font = '10px monospace';
+  ctx.font = '12px monospace';
   ctx.shadowBlur = 0;
   for (let i = 0; i < killFeed.length; i++) {
     const k     = killFeed[i];
     const alpha = Math.max(0, 1 - (now - k.at) / 5000);
-    const y     = ARENA_H - 14 - (killFeed.length - 1 - i) * 15;
+    const y     = ARENA_H - 200 - (killFeed.length - 1 - i) * 18;
     const kCol  = COLORS[k.killerIndex % COLORS.length];
     const vCol  = COLORS[k.victimIndex % COLORS.length];
-    const kW    = k.killerName.length * 6.2;
+    const kW    = k.killerName.length * 7.2;
     ctx.globalAlpha = alpha;
     ctx.textAlign   = 'left';
     ctx.fillStyle   = kCol;
     ctx.shadowColor = kCol;
     ctx.shadowBlur  = 4;
-    ctx.fillText(k.killerName, 10, y);
+    ctx.fillText(k.killerName, 12, y);
     ctx.fillStyle  = '#555577';
     ctx.shadowBlur = 0;
-    ctx.fillText(' ✕ ', 10 + kW, y);
+    ctx.fillText(' ✕ ', 12 + kW, y);
     ctx.fillStyle   = vCol;
     ctx.shadowColor = vCol;
     ctx.shadowBlur  = 4;
-    ctx.fillText(k.victimName, 10 + kW + 18, y);
+    ctx.fillText(k.victimName, 12 + kW + 22, y);
   }
   ctx.globalAlpha = 1;
   ctx.shadowBlur  = 0;
@@ -1138,25 +1313,25 @@ function drawKillFeed() {
 
 function drawLeaderboard(state) {
   const sorted = [...state.ships].sort((a, b) => b.kills - a.kills);
-  const x = ARENA_W - 12;
-  let y = 22;
+  const x = ARENA_W - 14;
+  let y = 26;
 
-  ctx.font      = 'bold 10px monospace';
+  ctx.font      = 'bold 12px monospace';
   ctx.fillStyle = '#3a3a6a';
   ctx.shadowBlur = 0;
   ctx.textAlign = 'right';
   ctx.fillText('KILLS', x, y);
-  y += 14;
+  y += 16;
 
   for (const ship of sorted) {
     const col  = COLORS[ship.index % COLORS.length];
     const isMe = ship.index === _myIndex;
-    ctx.font        = isMe ? 'bold 10px monospace' : '10px monospace';
+    ctx.font        = isMe ? 'bold 12px monospace' : '11px monospace';
     ctx.fillStyle   = ship.isBot ? '#3a3a5a' : col;
     ctx.shadowColor = col;
     ctx.shadowBlur  = isMe ? 5 : 0;
     ctx.fillText(`${ship.kills}  ${ship.name}${isMe ? ' ◄' : ''}`, x, y);
-    y += 13;
+    y += 15;
   }
   ctx.shadowBlur = 0;
 }
