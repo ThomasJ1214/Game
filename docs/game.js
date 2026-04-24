@@ -638,33 +638,91 @@ function drawBullet(b) {
 
 function drawMissile(b, state) {
   ctx.save();
-  const col = '#ff4400';
+  const ang  = Math.atan2(b.vy, b.vx);
+  const spd  = Math.hypot(b.vx, b.vy) || 1;
 
-  // Long homing trail
-  for (let t = 8; t >= 1; t--) {
-    ctx.globalAlpha = ((9 - t) / 9) * 0.22;
-    ctx.fillStyle   = col;
+  // ── Multi-colour trail ───────────────────────────────────────────
+  const trailColors = ['#ffffff','#ffffaa','#ffee44','#ffaa00','#ff6600','#ff2200','#881100'];
+  for (let t = 12; t >= 1; t--) {
+    const frac  = t / 12;
+    const ci    = Math.floor(frac * (trailColors.length - 1));
+    ctx.globalAlpha = (1 - frac) * 0.6;
+    ctx.fillStyle   = trailColors[Math.min(ci, trailColors.length - 1)];
+    const tx = b.x - (b.vx / spd) * t * 2.8;
+    const ty = b.y - (b.vy / spd) * t * 2.8;
     ctx.beginPath();
-    ctx.arc(b.x - b.vx * t * 1.6, b.y - b.vy * t * 1.6, (BULLET_RADIUS + 2) * (1 - t * 0.1), 0, Math.PI * 2);
+    ctx.arc(tx, ty, (BULLET_RADIUS + 2) * (1 - frac * 0.6), 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Glowing body
+  // ── Sparks ───────────────────────────────────────────────────────
+  ctx.globalAlpha = 0.7;
+  for (let i = 0; i < 5; i++) {
+    const sf  = (i / 5 + (b.born * 0.07 + i * 1.3) % 1) % 1;
+    const sx  = b.x - (b.vx / spd) * sf * 22 + (Math.sin(b.born * 0.1 + i * 2.4) * 4);
+    const sy  = b.y - (b.vy / spd) * sf * 22 + (Math.cos(b.born * 0.1 + i * 1.7) * 4);
+    ctx.fillStyle = i % 2 === 0 ? '#ffdd44' : '#ff6600';
+    ctx.beginPath();
+    ctx.arc(sx, sy, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ── Outer glow ───────────────────────────────────────────────────
   ctx.globalAlpha = 1;
-  ctx.shadowColor = col;
-  ctx.shadowBlur  = 28;
-  ctx.fillStyle   = col;
+  ctx.shadowColor = '#ff4400';
+  ctx.shadowBlur  = 30;
+  ctx.fillStyle   = '#ff5500';
   ctx.beginPath();
-  ctx.arc(b.x, b.y, BULLET_RADIUS + 2, 0, Math.PI * 2);
+  ctx.arc(b.x, b.y, BULLET_RADIUS + 3, 0, Math.PI * 2);
   ctx.fill();
 
-  // White-hot core
-  ctx.shadowBlur = 12;
-  ctx.fillStyle  = '#ffeeaa';
+  // ── Rocket body (elongated capsule along velocity) ───────────────
+  ctx.shadowBlur = 14;
+  ctx.fillStyle  = '#ffcc44';
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(ang);
   ctx.beginPath();
-  ctx.arc(b.x, b.y, BULLET_RADIUS * 0.5, 0, Math.PI * 2);
+  ctx.ellipse(0, 0, BULLET_RADIUS + 3, BULLET_RADIUS * 0.7, 0, 0, Math.PI * 2);
   ctx.fill();
 
+  // Nose cone
+  ctx.fillStyle  = '#ffffff';
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.moveTo(BULLET_RADIUS + 3, 0);
+  ctx.lineTo(BULLET_RADIUS - 1, -2.5);
+  ctx.lineTo(BULLET_RADIUS - 1,  2.5);
+  ctx.closePath();
+  ctx.fill();
+
+  // Fins
+  ctx.fillStyle  = '#ff3300';
+  ctx.shadowBlur = 0;
+  const finL = -(BULLET_RADIUS + 1);
+  ctx.beginPath();
+  ctx.moveTo(finL, 0); ctx.lineTo(finL - 5, -6); ctx.lineTo(finL, -3); ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(finL, 0); ctx.lineTo(finL - 5,  6); ctx.lineTo(finL,  3); ctx.closePath(); ctx.fill();
+
+  ctx.restore();
+
+  // ── Engine plume ─────────────────────────────────────────────────
+  ctx.shadowBlur = 0;
+  const plumeDist = BULLET_RADIUS + 3;
+  const px = b.x - Math.cos(ang) * plumeDist;
+  const py = b.y - Math.sin(ang) * plumeDist;
+  const pg = ctx.createRadialGradient(px, py, 0, px, py, 8);
+  pg.addColorStop(0,   'rgba(255,255,200,0.9)');
+  pg.addColorStop(0.3, 'rgba(255,150,0,0.6)');
+  pg.addColorStop(1,   'rgba(255,0,0,0)');
+  ctx.fillStyle = pg;
+  ctx.beginPath();
+  ctx.arc(px, py, 8, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 0;
   ctx.restore();
 }
 
@@ -705,7 +763,7 @@ function drawTargetReticle(x, y, now) {
 // ─────────────────────────────────────────────────────────────
 
 // Hull polygon vertices for each branch × tier range (local coords, facing right)
-function _shipPts(branch, tier) {
+function _shipPts(branch, tier, sub) {
   switch (branch) {
     case 'S': // Speed — elongates and narrows progressively
       if (tier >= 9) return [[ 28,  0], [-20, -5], [-14, 0], [-20,  5]];
@@ -725,6 +783,16 @@ function _shipPts(branch, tier) {
       if (tier >= 4) return [[ 17,  0], [-14,-13], [ -8, 0], [-14, 13]];
       if (tier >= 1) return [[ 18,  0], [-13,-12], [ -7, 0], [-13, 12]];
       break;
+    case 'D': // Drone — flat wide shape with notched rear
+      if (tier >= 9) return [[ 14, 0], [-8,-22], [-4,-8], [-12,0], [-4, 8], [-8, 22]];
+      if (tier >= 6) return [[ 14, 0], [-8,-19], [-4,-7], [-10,0], [-4, 7], [-8, 19]];
+      if (tier >= 3) return [[ 14, 0], [-7,-16], [-3,-6], [ -9,0], [-3, 6], [-7, 16]];
+      return         [[ 13, 0], [-6,-13], [-2,-5], [ -8,0], [-2, 5], [-6, 13]];
+    case 'E': // Energy — diamond with swept forward prongs
+      if (tier >= 9) return [[ 26, 0], [ 8,-6], [-10,-10], [-8,0], [-10, 10], [ 8, 6]];
+      if (tier >= 6) return [[ 24, 0], [ 7,-5], [ -9, -9], [-7,0], [ -9,  9], [ 7, 5]];
+      if (tier >= 3) return [[ 22, 0], [ 6,-4], [ -8, -8], [-6,0], [ -8,  8], [ 6, 4]];
+      return         [[ 20, 0], [ 5,-4], [ -7, -7], [-5,0], [ -7,  7], [ 5, 4]];
   }
   return [[ 18, 0], [-12,-10], [-6, 0], [-12, 10]]; // default (no branch)
 }
@@ -822,6 +890,41 @@ function _drawBranchExtras(branch, tier, col, now, shipIdx) {
       ctx.arc(0, 0, sr, 0, Math.PI * 2);
       ctx.stroke();
     }
+  } else if (branch === 'D') {
+    // Orbiting drone dots
+    if (tier >= 3) {
+      const numDrones = Math.min(4, 1 + Math.floor(tier / 3));
+      for (let i = 0; i < numDrones; i++) {
+        const a = now * 0.003 + (i / numDrones) * Math.PI * 2;
+        const dr = 18 + tier * 1.2;
+        ctx.globalAlpha = 0.6;
+        ctx.fillStyle = col;
+        ctx.shadowColor = col;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(Math.cos(a) * dr, Math.sin(a) * dr, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.shadowBlur = 0;
+    }
+  } else if (branch === 'E') {
+    // Energy arcs
+    if (tier >= 3) {
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.5;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 16;
+      ctx.globalAlpha = 0.3 + 0.15 * Math.sin(now * 0.01 + shipIdx);
+      ctx.beginPath();
+      ctx.arc(0, 0, 14 + tier * 1.5, -0.6, 0.6);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, 0, 14 + tier * 1.5, Math.PI - 0.6, Math.PI + 0.6);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.shadowBlur = 0;
+    }
   }
 
   ctx.globalAlpha = 1;
@@ -835,7 +938,8 @@ function drawShip(ship, now) {
   const isMe   = ship.index === _myIndex;
   const branch = window.getShipBranch ? window.getShipBranch(ship.upgradePath) : null;
   const tier   = ship.tier || 0;
-  const pts    = _shipPts(branch, tier);
+  const sub    = (ship.upgradePath || []).some(id => id.endsWith('b')) ? 'b' : 'a';
+  const pts    = _shipPts(branch, tier, sub);
   // Rear-most X for thrust/engine anchor
   const rearX  = pts.reduce((m, p) => Math.min(m, p[0]), 0);
 
@@ -1012,8 +1116,8 @@ function drawHUD(state, now) {
     ctx.fillText(tierLabel, 14, 100);
 
     // Difficulty label
-    const diffLabel = { easy: 'EASY', medium: 'MED', beast: 'BEAST' }[_difficulty] || '';
-    const diffCol   = _difficulty === 'beast' ? '#ff4444' : _difficulty === 'easy' ? '#44ff88' : '#4488ff';
+    const diffLabel = { easy: 'EASY', medium: 'MED', beast: 'BEAST', none: 'NONE' }[_difficulty] || '';
+    const diffCol   = _difficulty === 'beast' ? '#ff4444' : _difficulty === 'easy' ? '#44ff88' : _difficulty === 'none' ? '#888888' : '#4488ff';
     ctx.font        = '10px monospace';
     ctx.fillStyle   = diffCol;
     ctx.shadowColor = diffCol;
@@ -1021,23 +1125,17 @@ function drawHUD(state, now) {
     ctx.fillText(`BOTS: ${diffLabel}`, 14, 114);
     ctx.shadowBlur  = 0;
 
-    // Thomas_ missile bar
+    // Thomas_ missile bar — always ready (no cooldown)
     if (_isThomas) {
-      const nowMs  = Date.now();
-      const elap   = nowMs - (myShip.missileCd || 0);
-      const mReady = elap >= 5000;
-      const mFill  = Math.min(1, elap / 5000);
-      ctx.fillStyle  = '#111128';
-      ctx.fillRect(14, 124, barW, barH);
-      ctx.fillStyle  = mReady ? '#ff4400' : '#331100';
-      if (mReady) { ctx.shadowColor = '#ff4400'; ctx.shadowBlur = 6; }
-      ctx.fillRect(14, 124, barW * mFill, barH);
-      ctx.shadowBlur = 0;
-      ctx.font       = '10px monospace';
-      ctx.fillStyle  = mReady ? '#ff6622' : '#442211';
-      ctx.fillText(mReady ? 'MISSILE READY [I]' : `missile ${((5000 - elap) / 1000).toFixed(1)}s`, 14, 140);
-      ctx.font       = '9px monospace';
-      ctx.fillStyle  = '#332211';
+      ctx.fillStyle  = '#ff4400';
+      ctx.shadowColor = '#ff4400';
+      ctx.shadowBlur  = 8;
+      ctx.font        = '11px monospace';
+      ctx.fillStyle   = '#ff6622';
+      ctx.fillText('MISSILE READY [I] · SALVO [O]', 14, 140);
+      ctx.shadowBlur  = 0;
+      ctx.font        = '9px monospace';
+      ctx.fillStyle   = '#332211';
       ctx.fillText('[J] lock  [K] cycle', 14, 152);
     }
   }
@@ -1094,11 +1192,13 @@ function drawHUD(state, now) {
 // DRAW: UPGRADE PANEL
 // ─────────────────────────────────────────────────────────────
 
-const BRANCH_LABELS = { S: 'SPEED',  F: 'FIREPOWER', T: 'TANK' };
+const BRANCH_LABELS = { S: 'SPEED', F: 'FIREPOWER', T: 'TANK', D: 'DRONE', E: 'ENERGY' };
 const BRANCH_DESCS  = {
   S: 'Movement speed & dash',
   F: 'Bullet damage & fire rate',
   T: 'Health, shields & resistance',
+  D: 'Max bullets & fire rate burst',
+  E: 'Bullet speed & piercing power',
 };
 
 function drawUpgradePanel(state) {
@@ -1154,7 +1254,7 @@ function drawUpgradePanel(state) {
     const cn   = tree[id];
     if (!cn) return;
     const cx   = startX + idx * (cardW + gap);
-    const col  = id[0] === 'S' ? '#00ffdd' : id[0] === 'F' ? '#ff8844' : '#88aaff';
+    const col  = id[0] === 'S' ? '#00ffdd' : id[0] === 'F' ? '#ff8844' : id[0] === 'T' ? '#88aaff' : id[0] === 'D' ? '#aaff44' : '#cc44ff';
 
     // Card background
     ctx.fillStyle   = 'rgba(8,8,28,0.88)';
