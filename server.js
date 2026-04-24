@@ -65,15 +65,15 @@ const DIFF_PARAMS = {
     preferHuman: false,
   },
   beast: {
-    ticks:       3,     // near-instant reactions
-    aimTol:      0.055, // surgical accuracy
+    ticks:       2,     // near-instant reactions
+    aimTol:      0.048, // surgical accuracy
     farmAimTol:  0.10,
-    retreatHp:   0.05,  // almost never retreats — fights to the death
-    huntRange:   2400,  // hunts from very far away
-    leadFactor:  1.4,   // over-leads fast targets
+    retreatHp:   0.06,  // fights to the death
+    huntRange:   2600,  // hunts from very far away
+    leadFactor:  1.4,
     jitter:      0,
     boostHunt:   true,
-    preferHuman: true,  // specifically hunts human players first
+    preferHuman: true,
   },
 };
 
@@ -498,8 +498,7 @@ function tryRespawn(ship, now) {
 
 // ─── BOT AI ──────────────────────────────────────────────────────────────────
 
-// Iterative ballistic solution: returns predicted impact [x, y] accounting for
-// target velocity. Converges in 4 steps — accurate for straight-line movement.
+// Basic ballistic solution for easy/medium AI (no drift compensation)
 function beamSolution(bot, target) {
   const bspd = Math.max(bot.ss.bulletSpd, 1);
   let t = Math.hypot(target.x - bot.x, target.y - bot.y) / bspd;
@@ -511,16 +510,38 @@ function beamSolution(bot, target) {
   return [target.x + target.vx * t, target.y + target.vy * t];
 }
 
-// Apply wall and asteroid avoidance to an aim point (shared between AI modes)
+// Velocity-compensated beam solution for beast AI:
+// accounts for (1) bot's own velocity offsetting the bullet (vx*0.4 inherited),
+// and (2) target's drag deceleration over flight time.
+function beamSolutionComp(bot, target) {
+  const bspd = Math.max(bot.ss.bulletSpd, 1);
+  let t = Math.hypot(target.x - bot.x, target.y - bot.y) / bspd;
+  for (let i = 0; i < 8; i++) {
+    // Simulate target position with drag over t ticks
+    const steps = Math.min(Math.round(t), 80);
+    let tx = target.x, ty = target.y, tvx = target.vx, tvy = target.vy;
+    for (let s = 0; s < steps; s++) { tvx *= 0.975; tvy *= 0.975; tx += tvx; ty += tvy; }
+    // Remove bot's own velocity from required bullet displacement
+    // (bullet inherits bot.vx*0.4, bot.vy*0.4 at fire time)
+    const adjX = tx - bot.x - bot.vx * 0.4 * t;
+    const adjY = ty - bot.y - bot.vy * 0.4 * t;
+    t = Math.hypot(adjX, adjY) / bspd;
+  }
+  // Final target position with drag
+  const steps = Math.min(Math.round(t), 80);
+  let tx = target.x, ty = target.y, tvx = target.vx, tvy = target.vy;
+  for (let s = 0; s < steps; s++) { tvx *= 0.975; tvy *= 0.975; tx += tvx; ty += tvy; }
+  return [tx, ty];
+}
+
+// Wall/asteroid avoidance for easy/medium AI
 function avoidHazards(bot, aimX, aimY, wallMult, astMult) {
-  // Predict position 35 ticks ahead to catch approaching walls early
   const projX = bot.x + bot.vx * 35, projY = bot.y + bot.vy * 35;
   const wm    = BOT_WALL_MARGIN * wallMult;
   if (projX < wm)            aimX += (wm - projX)            * 5;
   if (projX > WORLD_W - wm)  aimX -= (wm - (WORLD_W - projX)) * 5;
   if (projY < wm)            aimY += (wm - projY)            * 5;
   if (projY > WORLD_H - wm)  aimY -= (wm - (WORLD_H - projY)) * 5;
-
   for (const ast of ASTEROIDS) {
     const adx = ast.x - bot.x, ady = ast.y - bot.y;
     const adist = Math.hypot(adx, ady);
@@ -528,30 +549,69 @@ function avoidHazards(bot, aimX, aimY, wallMult, astMult) {
     if (adist < clear && adist > 0) {
       const perpX = -ady / adist, perpY = adx / adist;
       const sign  = (bot.vx * perpX + bot.vy * perpY) >= 0 ? 1 : -1;
-      const str   = (clear - adist) * 6;
-      aimX += perpX * str * sign;
-      aimY += perpY * str * sign;
+      aimX += perpX * (clear - adist) * 6 * sign;
+      aimY += perpY * (clear - adist) * 6 * sign;
     }
   }
   return [aimX, aimY];
 }
 
-// ── BEAST: full predictive AI ─────────────────────────────────────────────────
+// Enhanced avoidance for beast AI: looks 50 ticks ahead, checks trajectory intersection
+function avoidHazardsBeast(bot, aimX, aimY) {
+  const projX = bot.x + bot.vx * 50, projY = bot.y + bot.vy * 50;
+  const wm = BOT_WALL_MARGIN * 1.9;
+  if (projX < wm)            aimX += (wm - projX)             * 7;
+  if (projX > WORLD_W - wm)  aimX -= (wm - (WORLD_W - projX)) * 7;
+  if (projY < wm)            aimY += (wm - projY)             * 7;
+  if (projY > WORLD_H - wm)  aimY -= (wm - (WORLD_H - projY)) * 7;
+  // Clamp aim to world
+  aimX = Math.max(BOT_WALL_MARGIN, Math.min(WORLD_W - BOT_WALL_MARGIN, aimX));
+  aimY = Math.max(BOT_WALL_MARGIN, Math.min(WORLD_H - BOT_WALL_MARGIN, aimY));
+  for (const ast of ASTEROIDS) {
+    const adx = ast.x - bot.x, ady = ast.y - bot.y;
+    const adist = Math.hypot(adx, ady);
+    const clear = ast.r + SHIP_RADIUS + BOT_AST_MARGIN * 1.8;
+    if (adist < clear * 1.5 && adist > 0) {
+      // Only push if moving toward asteroid
+      const velDot = (bot.vx * adx + bot.vy * ady) / (adist || 1);
+      const str = (clear - adist) * 9;
+      const perpX = -ady / adist, perpY = adx / adist;
+      const sign  = (bot.vx * perpX + bot.vy * perpY) >= 0 ? 1 : -1;
+      if (adist < clear || velDot > 0) {
+        aimX += perpX * str * sign;
+        aimY += perpY * str * sign;
+      }
+    }
+  }
+  return [aimX, aimY];
+}
+
+// ── BEAST: Advanced full-map-aware AI ────────────────────────────────────────
 function botThinkBeast(bot, state, now) {
   if (!bot.alive) return emptyInput();
 
-  // Apply upgrades: beast always picks Firepower branch for max aggression
+  // ── 1. Instant upgrade with diverse branch strategy ───────────────────
   if (bot.pendingUpgrade) {
     const node = UPGRADE_TREE[bot.upgradePath[bot.upgradePath.length - 1]];
     if (node && node.next.length > 0) {
       const mixed = node.next.some(id => id[0] !== node.next[0][0]);
       let pick;
       if (mixed) {
-        // Prefer F > S > T; vary by bot index so not all beasts identical
-        const pref = ['F','S','F','T','F','S'][bot.index % 6];
+        // Each bot gets a different primary branch for genuine diversity
+        const BRANCH_BY_IDX = ['F','S','T','F','S','E','D','F','S','T','F','S','T','E','D'];
+        const pref = BRANCH_BY_IDX[bot.index % 15];
         pick = node.next.find(id => id[0] === pref) || node.next[0];
       } else {
-        pick = node.next.find(id => id.endsWith('a')) || node.next[0];
+        // Within-branch: some bots take the c sub-branch, others a/b
+        // c-branch bots: index % 3 === 2; a-bots: even; b-bots: odd
+        const hasCPath = node.next.some(id => id.endsWith('c') || id.endsWith('d'));
+        if (hasCPath && bot.index % 3 === 2) {
+          pick = node.next.find(id => id.endsWith('c')) || node.next[0];
+        } else if (hasCPath && bot.index % 3 === 0) {
+          pick = node.next.find(id => id.endsWith('a') || id.endsWith('c')) || node.next[0];
+        } else {
+          pick = node.next.find(id => id.endsWith('b') || id.endsWith('d')) || node.next[node.next.length - 1];
+        }
       }
       applyUpgrade(bot, pick);
     } else { bot.pendingUpgrade = false; }
@@ -561,133 +621,223 @@ function botThinkBeast(bot, state, now) {
   const inp    = emptyInput();
   const hpFrac = bot.health / bot.ss.health;
 
-  // ── Decision throttle: 5 ticks but carry last frame ──────────────────
-  if (state.tick - bot._botDecision < p.ticks) return bot._beastInp || inp;
-  bot._botDecision = state.tick;
+  // ── 2. Full tactical re-evaluation every p.ticks ─────────────────────
+  if (state.tick - (bot._botDecision || 0) >= p.ticks) {
+    bot._botDecision = state.tick;
 
-  // ── Stuck detection: every 60 ticks check if bot hasn't moved ────────
-  if (bot._lastX == null) { bot._lastX = bot.x; bot._lastY = bot.y; bot._lastXTick = state.tick; }
-  if (state.tick - (bot._lastXTick || 0) >= 60) {
-    const moved = Math.hypot(bot.x - bot._lastX, bot.y - bot._lastY);
-    const curState = bot._botState || 'wander';
-    if (moved < 40 && (curState === 'farm' || curState === 'wander' || curState === 'intercept')) {
-      bot._wanderPt = { x: rnd(400, WORLD_W - 400), y: rnd(400, WORLD_H - 400) };
-      inp.w = true;
+    // Stuck detection: if barely moved in 60 ticks, aim toward map center
+    if (bot._lastX == null) { bot._lastX = bot.x; bot._lastY = bot.y; bot._lastXTick = state.tick; }
+    if (state.tick - (bot._lastXTick || 0) >= 60) {
+      if (Math.hypot(bot.x - bot._lastX, bot.y - bot._lastY) < 50) {
+        const escAng = Math.atan2(WORLD_H/2 - bot.y, WORLD_W/2 - bot.x) + (Math.random()-0.5)*1.4;
+        bot._wanderPt = { x: bot.x + Math.cos(escAng)*900, y: bot.y + Math.sin(escAng)*900 };
+      }
+      bot._lastX = bot.x; bot._lastY = bot.y; bot._lastXTick = state.tick;
     }
-    bot._lastX = bot.x; bot._lastY = bot.y; bot._lastXTick = state.tick;
-  }
 
-  // ── Identify primary target: closest human first, then weighted score ──
-  let target = null, targetDist = Infinity;
-  let bestHumanDist = Infinity;
-  for (const s of state.ships) {
-    if (s.index === bot.index || !s.alive) continue;
-    const d = Math.hypot(s.x - bot.x, s.y - bot.y);
-    if (!s.isBot && d < bestHumanDist) { bestHumanDist = d; target = s; targetDist = d; }
-  }
-  if (!target) {
-    // No human visible: pick ship with best kill-efficiency score (dist penalised by HP remaining)
+    // ── Target scoring (multi-factor) ──────────────────────────────────
+    let target = null, bestTScore = -Infinity;
     for (const s of state.ships) {
       if (s.index === bot.index || !s.alive) continue;
-      const d     = Math.hypot(s.x - bot.x, s.y - bot.y);
-      const score = d - (1 - s.health / Math.max(s.maxHealth || s.ss.health, 1)) * 600;
-      if (score < targetDist) { targetDist = d; target = s; }
+      const dist    = Math.hypot(s.x - bot.x, s.y - bot.y);
+      const maxHp   = s.maxHealth || (s.ss && s.ss.health) || 5;
+      const hpRatio = s.health / maxHp;
+      let score = 0;
+      score += !s.isBot ? 900 : 0;                     // humans are high-value XP
+      score += (1 - hpRatio) * 600;                    // low HP = easy kill
+      score -= dist * 0.22;                            // mild distance penalty
+      score += (s.tier || 0) * 15;                     // more XP from high tier
+      // Bonus if target is drifting toward a wall (cornered)
+      const px = s.x + s.vx * 25, py = s.y + s.vy * 25;
+      if (px < 700 || px > WORLD_W-700 || py < 700 || py > WORLD_H-700) score += 200;
+      if (score > bestTScore) { bestTScore = score; target = s; }
     }
-  }
+    const targetDist = target ? Math.hypot(target.x - bot.x, target.y - bot.y) : Infinity;
 
-  // ── Detect incoming bullet threats within 380 px ──────────────────────
-  let dodgeX = 0, dodgeY = 0, dodgeLevel = 0;
-  for (const b of state.bullets) {
-    if (b.ownerIndex === bot.index) continue;
-    if (b.homing) continue; // missiles — beast can't dodge them, don't react
-    const dx = bot.x - b.x, dy = bot.y - b.y;
-    const dist2 = Math.hypot(dx, dy);
-    if (dist2 > 380) continue;
-    const bspd = Math.hypot(b.vx, b.vy) || 1;
-    const dot  = (b.vx * (-dx) + b.vy * (-dy)) / (bspd * dist2 + 0.001);
-    if (dot < 0.45) continue;  // bullet not aimed at us
-    const threat = (1 - dist2 / 380) * dot * dot;  // quadratic falloff, very sensitive
-    dodgeX += (-dy / dist2) * threat;
-    dodgeY += ( dx / dist2) * threat;
-    dodgeLevel += threat;
-  }
-  const dodging = dodgeLevel > 0.25;
-
-  // ── Compute weighted flee vector from all nearby enemies ──────────────
-  let fleeX = 0, fleeY = 0;
-  for (const s of state.ships) {
-    if (s.index === bot.index || !s.alive) continue;
-    const dx = bot.x - s.x, dy = bot.y - s.y;
-    const d  = Math.hypot(dx, dy) || 1;
-    fleeX += dx / (d * d); fleeY += dy / (d * d);
-  }
-
-  // ── Decide bot state and aim point ────────────────────────────────────
-  let aimX = bot.x, aimY = bot.y;
-  let bState = 'wander';
-
-  if (hpFrac < p.retreatHp) {
-    // Strategic retreat: flee all enemies, find open space
-    bState = 'retreat';
-    const fd = Math.hypot(fleeX, fleeY) || 1;
-    aimX = bot.x + (fleeX / fd) * 700;
-    aimY = bot.y + (fleeY / fd) * 700;
-
-  } else if (dodging && target) {
-    // Evasion: strafe perpendicular to bullet while still facing target
-    bState = 'dodge';
-    const dl = Math.hypot(dodgeX, dodgeY) || 1;
-    aimX = bot.x + (dodgeX / dl) * 450;
-    aimY = bot.y + (dodgeY / dl) * 450;
-
-  } else if (target && targetDist <= p.huntRange) {
-    bState = 'hunt';
-    // Iterative lead-shot for precise prediction
-    const [lx, ly] = beamSolution(bot, target);
-    aimX = lx; aimY = ly;
-
-  } else if (target) {
-    // Intercept: move toward where target will be
-    bState = 'intercept';
-    const eta = targetDist / Math.max(bot.ss.maxSpd * 1.5, 1);
-    aimX = target.x + target.vx * Math.min(eta, 80);
-    aimY = target.y + target.vy * Math.min(eta, 80);
-
-  } else {
-    // Farm: head to nearest XP block or wander
-    bState = 'farm';
-    let bDist = Infinity, bBlk = null;
+    // ── XP block scoring (value × cluster / (distance + danger)) ──────
+    let farmBlk = null, bestFScore = -Infinity;
     for (const blk of state.xpBlocks) {
       if (!blk.alive) continue;
-      const d = Math.hypot(blk.x - bot.x, blk.y - bot.y);
-      if (d < bDist) { bDist = d; bBlk = blk; }
+      const dist = Math.hypot(blk.x - bot.x, blk.y - bot.y);
+      // Danger: proximity of enemies to the block
+      let danger = 0;
+      for (const s of state.ships) {
+        if (!s.alive || s.index === bot.index) continue;
+        const ed = Math.hypot(blk.x - s.x, blk.y - s.y);
+        if (ed < 600) danger += (600 - ed) * 0.4;
+      }
+      // Cluster bonus: nearby alive blocks
+      let cluster = 0;
+      for (const b2 of state.xpBlocks) {
+        if (b2.alive && b2 !== blk && Math.hypot(b2.x-blk.x, b2.y-blk.y) < 250) cluster += 40;
+      }
+      const score = (blk.xp || 50) * 2.5 + cluster - dist * 0.08 - danger;
+      if (score > bestFScore) { bestFScore = score; farmBlk = blk; }
     }
-    if (bBlk) { aimX = bBlk.x; aimY = bBlk.y; }
-    else {
-      if (!bot._wanderPt || Math.hypot(bot._wanderPt.x - bot.x, bot._wanderPt.y - bot.y) < 150)
-        bot._wanderPt = { x: rnd(400, WORLD_W - 400), y: rnd(400, WORLD_H - 400) };
+
+    // ── Trajectory-based bullet threat detection ────────────────────────
+    // Simulate each threatening bullet + own ship forward 18 ticks
+    let dodgeX = 0, dodgeY = 0, dodgeLevel = 0;
+    for (const b of state.bullets) {
+      if (b.ownerIndex === bot.index || b.homing) continue;
+      const bvx = b.vx, bvy = b.vy;
+      const bspd2 = Math.hypot(bvx, bvy) || 1;
+      // Quick range cull before expensive simulation
+      if (Math.hypot(b.x - bot.x, b.y - bot.y) > 500) continue;
+      let bx = b.x, by = b.y;
+      let sfx = bot.x, sfy = bot.y, sfvx = bot.vx, sfvy = bot.vy;
+      let minD = Infinity;
+      for (let t = 1; t <= 18; t++) {
+        bx += bvx; by += bvy;
+        sfvx *= 0.975; sfvy *= 0.975;
+        sfx += sfvx; sfy += sfvy;
+        const d = Math.hypot(bx - sfx, by - sfy);
+        if (d < minD) minD = d;
+      }
+      const CLOSE = SHIP_RADIUS + BULLET_RADIUS + 26;
+      if (minD < CLOSE * 2.8) {
+        const threat = Math.max(0, 1 - minD / (CLOSE * 2.8));
+        const perpX  = -bvy / bspd2, perpY = bvx / bspd2;
+        const sign   = (bot.vx * perpX + bot.vy * perpY) >= 0 ? 1 : -1;
+        dodgeX += perpX * sign * threat;
+        dodgeY += perpY * sign * threat;
+        dodgeLevel += threat;
+      }
+    }
+    const dodging = dodgeLevel > 0.12;
+
+    // ── Weighted flee pressure from nearby enemies ──────────────────────
+    let fleeX = 0, fleeY = 0, fleePressure = 0;
+    for (const s of state.ships) {
+      if (s.index === bot.index || !s.alive) continue;
+      const dx = bot.x - s.x, dy = bot.y - s.y;
+      const d  = Math.hypot(dx, dy) || 1;
+      if (d < 700) {
+        const w = (1 - d/700) * ((s.tier || 0) + 1) * 0.4;
+        fleeX += (dx/d) * w; fleeY += (dy/d) * w; fleePressure += w;
+      }
+    }
+
+    // ── Cover seeking: find asteroid that screens us from enemies ───────
+    let coverX = WORLD_W/2, coverY = WORLD_H/2;
+    if (hpFrac < 0.35) {
+      let bestCover = -Infinity;
+      for (const ast of ASTEROIDS) {
+        const da = Math.hypot(ast.x - bot.x, ast.y - bot.y);
+        if (da > 2200) continue;
+        let coverScore = 0;
+        for (const s of state.ships) {
+          if (!s.alive || s.index === bot.index) continue;
+          // How well does asteroid block line of sight from this enemy?
+          const ex = s.x, ey = s.y;
+          const toAstAng  = Math.atan2(ast.y - ey, ast.x - ex);
+          const toBotAng  = Math.atan2(bot.y - ey, bot.x - ex);
+          let angSep = Math.abs(normalAngle(toAstAng - toBotAng));
+          if (angSep > Math.PI) angSep = Math.PI*2 - angSep;
+          if (angSep < 0.5) coverScore += 300; // asteroid is between enemy and us
+        }
+        coverScore -= da * 0.06;
+        if (coverScore > bestCover) {
+          bestCover = coverScore;
+          // Position behind asteroid (away from nearest enemy)
+          const ang = Math.atan2(bot.y - ast.y, bot.x - ast.x);
+          coverX = ast.x + Math.cos(ang) * (ast.r + SHIP_RADIUS + 50);
+          coverY = ast.y + Math.sin(ang) * (ast.r + SHIP_RADIUS + 50);
+        }
+      }
+    }
+
+    // ── State machine ───────────────────────────────────────────────────
+    let bState, aimX = bot.x, aimY = bot.y;
+    const wantsXP  = bot.tier < 10 && farmBlk && (targetDist > 900 || target === null);
+    const critical = hpFrac < p.retreatHp;
+    const wounded  = hpFrac < 0.38 && fleePressure > 0.4;
+
+    if (critical || wounded) {
+      bState = 'retreat';
+      aimX = coverX; aimY = coverY;
+
+    } else if (dodging && dodgeLevel > 0.18) {
+      bState = 'dodge';
+      const dl = Math.hypot(dodgeX, dodgeY) || 1;
+      aimX = bot.x + (dodgeX / dl) * 520;
+      aimY = bot.y + (dodgeY / dl) * 520;
+
+    } else if (target && targetDist <= p.huntRange) {
+      bState = 'hunt';
+      const [lx, ly] = beamSolutionComp(bot, target);
+      aimX = lx; aimY = ly;
+
+    } else if (target && targetDist <= p.huntRange * 1.6) {
+      // Flank: approach from perpendicular to enemy's velocity for harder-to-dodge angle
+      bState = 'flank';
+      const eSpd  = Math.hypot(target.vx, target.vy);
+      const flankDir = (bot.index % 2 === 0 ? 1 : -1) *
+                       (Math.sin(state.tick * 0.005 + bot.index) > 0 ? 1 : -1);
+      const perpAng = (eSpd > 0.5)
+        ? Math.atan2(target.vy, target.vx) + Math.PI/2 * flankDir
+        : Math.atan2(bot.y - target.y, bot.x - target.x) + Math.PI/2 * flankDir;
+      aimX = target.x + Math.cos(perpAng) * 340;
+      aimY = target.y + Math.sin(perpAng) * 340;
+
+    } else if (wantsXP) {
+      bState = 'farm';
+      aimX = farmBlk.x; aimY = farmBlk.y;
+
+    } else if (target) {
+      bState = 'intercept';
+      const eta = targetDist / Math.max(bot.ss.maxSpd * 0.85, 1);
+      aimX = target.x + target.vx * Math.min(eta * 0.65, 90);
+      aimY = target.y + target.vy * Math.min(eta * 0.65, 90);
+
+    } else {
+      bState = 'wander';
+      if (!bot._wanderPt || Math.hypot(bot._wanderPt.x - bot.x, bot._wanderPt.y - bot.y) < 160)
+        bot._wanderPt = { x: rnd(500, WORLD_W-500), y: rnd(500, WORLD_H-500) };
       aimX = bot._wanderPt.x; aimY = bot._wanderPt.y;
     }
+
+    [aimX, aimY] = avoidHazardsBeast(bot, aimX, aimY);
+
+    // Cache all tactical decisions
+    bot._botState    = bState;
+    bot._aimX        = aimX;
+    bot._aimY        = aimY;
+    bot._target      = target;
+    bot._farmBlk     = farmBlk;
+    bot._dodgeX      = dodgeX;
+    bot._dodgeY      = dodgeY;
+    bot._dodging     = dodging;
+    bot._dodgeLevel  = dodgeLevel;
   }
 
-  // ── Hazard avoidance (enhanced margins for beast) ─────────────────────
-  [aimX, aimY] = avoidHazards(bot, aimX, aimY, 1.6, 1.4);
+  // ── 3. Per-tick steering (always fresh — no caching for rotation) ─────
+  const bState = bot._botState || 'wander';
+  const aimX   = bot._aimX != null ? bot._aimX : bot.x;
+  const aimY   = bot._aimY != null ? bot._aimY : bot.y;
+  const target = bot._target || null;
 
-  // ── Steer toward aim point ────────────────────────────────────────────
   const dx   = aimX - bot.x, dy = aimY - bot.y;
   const tgtA = Math.atan2(dy, dx);
   let diff   = normalAngle(tgtA - bot.angle);
   if (diff > Math.PI) diff -= Math.PI * 2;
-  if (diff >  0.07) inp.d = true;
-  if (diff < -0.07) inp.a = true;
+
+  // Angular PD controller: proportional on diff, derivative on angularVel
+  // Prevents oscillation — anticipates overshoot from angular momentum
+  const angVel  = bot.angularVel || 0;
+  const control = diff * 1.0 - angVel * 5.5;
+  if (control >  0.035) inp.d = true;
+  if (control < -0.035) inp.a = true;
 
   // ── Throttle, fire, boost ─────────────────────────────────────────────
+  const boostReady = now - bot.lastBoost >= bot.ss.boostCd;
+
   if (bState === 'retreat') {
     inp.w = true;
-    if (now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
-    // Opportunistic fire while retreating
+    if (boostReady) inp.shift = true;
+    // Opportunistic fire — still dangerous even while running
     if (target) {
-      const [lx2, ly2] = beamSolution(bot, target);
+      const [lx2, ly2] = beamSolutionComp(bot, target);
       let ad = normalAngle(Math.atan2(ly2 - bot.y, lx2 - bot.x) - bot.angle);
       if (ad > Math.PI) ad -= Math.PI * 2;
       if (Math.abs(ad) < p.aimTol * 1.5) inp.space = true;
@@ -695,41 +845,63 @@ function botThinkBeast(bot, state, now) {
 
   } else if (bState === 'dodge') {
     inp.w = true;
-    if (now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
-    // Fire at target while dodging if roughly aligned
+    if (boostReady && (bot._dodgeLevel || 0) > 0.3) inp.shift = true;
+    // Fire while dodging if briefly aligned
     if (target) {
-      const [lx2, ly2] = beamSolution(bot, target);
+      const [lx2, ly2] = beamSolutionComp(bot, target);
       let ad = normalAngle(Math.atan2(ly2 - bot.y, lx2 - bot.x) - bot.angle);
       if (ad > Math.PI) ad -= Math.PI * 2;
-      if (Math.abs(ad) < p.aimTol) inp.space = true;
+      if (Math.abs(ad) < p.aimTol * 1.1) inp.space = true;
     }
 
   } else if (bState === 'hunt') {
-    const rawDist = Math.hypot(target.x - bot.x, target.y - bot.y);
-    const optimal = 260;
-    if (rawDist > optimal + 80) {
+    const rawDist = target ? Math.hypot(target.x - bot.x, target.y - bot.y) : Infinity;
+    const optimal = 290;
+    if (rawDist > optimal + 60) {
       inp.w = true;
-      if (rawDist > 700 && now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
-    } else if (rawDist < optimal - 80) {
+      if (rawDist > 850 && boostReady) inp.shift = true;
+    } else if (rawDist < optimal - 60) {
       inp.s = true;
     } else {
-      // At optimal range: circle-strafe (maintain lateral velocity to orbit)
-      const perpA = tgtA + Math.PI / 2;
-      const lateralDot = bot.vx * Math.cos(perpA) + bot.vy * Math.sin(perpA);
-      if (lateralDot < 2.5) inp.w = true;  // build lateral speed
+      // Orbit with sinusoidal direction change — unpredictable to human players
+      const strafeDir = Math.sin(state.tick * 0.013 + bot.index * 2.9) > 0 ? 1 : -1;
+      const perpA     = tgtA + Math.PI / 2 * strafeDir;
+      const latSpd    = bot.vx * Math.cos(perpA) + bot.vy * Math.sin(perpA);
+      if (latSpd * strafeDir < 3.2) inp.w = true;
     }
     if (Math.abs(diff) < p.aimTol) inp.space = true;
 
+  } else if (bState === 'flank') {
+    inp.w = true;
+    if (boostReady) inp.shift = true;
+    // Fire opportunistically during approach
+    if (target) {
+      const [lx2, ly2] = beamSolutionComp(bot, target);
+      let ad = normalAngle(Math.atan2(ly2 - bot.y, lx2 - bot.x) - bot.angle);
+      if (ad > Math.PI) ad -= Math.PI * 2;
+      if (Math.abs(ad) < p.aimTol * 1.3) inp.space = true;
+    }
+
   } else if (bState === 'intercept') {
     inp.w = true;
-    if (now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
+    if (boostReady) inp.shift = true;
 
-  } else { // farm / wander
-    if (Math.hypot(aimX - bot.x, aimY - bot.y) > 80) inp.w = true;
+  } else if (bState === 'farm') {
+    const blk = bot._farmBlk;
+    if (blk && Math.hypot(blk.x - bot.x, blk.y - bot.y) > 60) inp.w = true;
+    // Shoot enemies that wander close during farm runs
+    if (target && Math.hypot(target.x - bot.x, target.y - bot.y) < 900) {
+      const [lx2, ly2] = beamSolutionComp(bot, target);
+      let ad = normalAngle(Math.atan2(ly2 - bot.y, lx2 - bot.x) - bot.angle);
+      if (ad > Math.PI) ad -= Math.PI * 2;
+      if (Math.abs(ad) < p.aimTol * 1.4) inp.space = true;
+    }
+
+  } else { // wander
+    if (Math.hypot(aimX - bot.x, aimY - bot.y) > 100) inp.w = true;
   }
 
   bot._beastInp = inp;
-  bot._botState = bState;
   return inp;
 }
 
