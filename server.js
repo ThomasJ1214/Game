@@ -1379,9 +1379,7 @@ io.on('connection', socket => {
     }
   });
 
-  // ── Thomas_ special hacks ───────────────────────────────────────────────────
-  const HACK_CDS = { dash: 2500, nova: 12000, god: 28000, warp: 8000, emp: 18000 };
-
+  // ── Thomas_ special hacks (no cooldowns) ──────────────────────────────────
   socket.on('thomas_hack', ({ type }) => {
     const code = socketRoom[socket.id];
     const room = code && rooms[code];
@@ -1391,13 +1389,10 @@ io.on('connection', socket => {
     const ship = room.gameState.ships[pl.index];
     if (!ship || !ship.alive || !ship.isThomas) return;
 
-    if (!ship._hackCds) ship._hackCds = {};
     const now = Date.now();
-    if ((ship._hackCds[type] || 0) > now) return; // still on cooldown
 
     if (type === 'dash') {
       // Hyper Dash: teleport 700px forward through walls
-      ship._hackCds.dash = now + HACK_CDS.dash;
       const dist = 700;
       ship.x = Math.max(50, Math.min(WORLD_W - 50, ship.x + Math.cos(ship.angle) * dist));
       ship.y = Math.max(50, Math.min(WORLD_H - 50, ship.y + Math.sin(ship.angle) * dist));
@@ -1406,7 +1401,6 @@ io.on('connection', socket => {
 
     } else if (type === 'nova') {
       // Nova Blast: annihilate everything within 480px
-      ship._hackCds.nova = now + HACK_CDS.nova;
       const NOVA_R = 480;
       for (const tgt of room.gameState.ships) {
         if (tgt.index === ship.index || !tgt.alive || tgt.invincible) continue;
@@ -1424,7 +1418,6 @@ io.on('connection', socket => {
 
     } else if (type === 'god') {
       // God Mode: full heal + 6s invincibility
-      ship._hackCds.god = now + HACK_CDS.god;
       ship.health = ship.ss.health;
       ship.invincible = true;
       ship.invincibleUntil = now + 6000;
@@ -1432,7 +1425,6 @@ io.on('connection', socket => {
 
     } else if (type === 'warp') {
       // Void Warp: teleport to a random safe spot far from enemies
-      ship._hackCds.warp = now + HACK_CDS.warp;
       let bestX = ship.x, bestY = ship.y, bestScore = -Infinity;
       for (let attempt = 0; attempt < 20; attempt++) {
         const cx = rnd(300, WORLD_W - 300), cy = rnd(300, WORLD_H - 300);
@@ -1451,7 +1443,6 @@ io.on('connection', socket => {
 
     } else if (type === 'emp') {
       // EMP Pulse: stun all enemies (zero velocity) within 900px for 1.5s
-      ship._hackCds.emp = now + HACK_CDS.emp;
       const EMP_R = 900;
       for (const tgt of room.gameState.ships) {
         if (tgt.index === ship.index || !tgt.alive) continue;

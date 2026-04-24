@@ -1284,18 +1284,45 @@ function drawHUD(state, now) {
     ctx.fillText(`BOTS: ${diffLabel}`, 14, 114);
     ctx.shadowBlur  = 0;
 
-    // Thomas_ missile bar — always ready (no cooldown)
+    // Thomas_ abilities panel
     if (_isThomas) {
-      ctx.fillStyle  = '#ff4400';
-      ctx.shadowColor = '#ff4400';
-      ctx.shadowBlur  = 8;
-      ctx.font        = '11px monospace';
+      const hx = 14;
+      let hy = 130;
+      // Section header
+      ctx.font        = 'bold 10px monospace';
       ctx.fillStyle   = '#ff6622';
-      ctx.fillText('MISSILE [I] · SALVO [O]  (auto-target)', 14, 140);
+      ctx.shadowColor = '#ff4400';
+      ctx.shadowBlur  = 6;
+      ctx.fillText('── THOMAS_ ABILITIES ──', hx, hy); hy += 14;
       ctx.shadowBlur  = 0;
-      ctx.font        = '9px monospace';
-      ctx.fillStyle   = '#554422';
-      ctx.fillText('[J] lock nearest  [K] cycle target', 14, 152);
+
+      // Missile line
+      ctx.font      = '10px monospace';
+      ctx.fillStyle = '#ff8844';
+      ctx.fillText('[I] Missile  [O] Salvo  (auto-target)', hx, hy); hy += 12;
+      ctx.fillStyle = '#554433';
+      ctx.fillText('[J] Lock  [K] Cycle', hx, hy); hy += 14;
+
+      // Hacks
+      const hacks = [
+        { key: 'V', label: 'Void Dash',   desc: '700px teleport + invincibility', col: '#00ffff' },
+        { key: 'N', label: 'Nova Blast',  desc: '480px AoE nuke',                 col: '#ff4400' },
+        { key: 'G', label: 'God Mode',    desc: 'Full heal + 6s invincible',       col: '#ffff00' },
+        { key: 'B', label: 'Void Warp',   desc: 'Safe teleport anywhere',          col: '#aa44ff' },
+        { key: 'E', label: 'EMP Pulse',   desc: 'Stun+zero all nearby enemies',    col: '#88aaff' },
+      ];
+      for (const h of hacks) {
+        ctx.font        = 'bold 9px monospace';
+        ctx.fillStyle   = h.col;
+        ctx.shadowColor = h.col;
+        ctx.shadowBlur  = 4;
+        ctx.fillText(`[${h.key}]`, hx, hy);
+        ctx.shadowBlur  = 0;
+        ctx.font        = '9px monospace';
+        ctx.fillStyle   = '#ccbbaa';
+        ctx.fillText(`${h.label} — ${h.desc}`, hx + 22, hy);
+        hy += 12;
+      }
     }
   }
 
