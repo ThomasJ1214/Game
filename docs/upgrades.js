@@ -2,7 +2,7 @@
 (function (root) {
 
   root.UPGRADE_TREE = {
-    root:  { tier:0,  name:'Recruit',        stats:{},                                                next:['S1','F1','T1'] },
+    root:  { tier:0,  name:'Recruit',        stats:{},                                                next:['S1','F1','T1','D1','E1'] },
 
     // ── Branch A: Speed / Agility ─────────────────────────────────────────────────────────────────
     S1:    { tier:1,  name:'Booster I',       stats:{ thrust:0.06, maxSpd:1.0 },                      next:['S2a','S2b'] },
@@ -66,6 +66,48 @@
     T9b:   { tier:9,  name:'Nexus',           stats:{ health:3, regenRate:4 },                        next:['T10a','T10b'] },
     T10a:  { tier:10, name:'ASCENDANT',       stats:{ health:5, dmgReduce:0.15 },                     next:[] },
     T10b:  { tier:10, name:'COLOSSUS GOD',    stats:{ health:4, regenRate:5 },                        next:[] },
+
+    // ── Branch D: Drone / Multi-shot ─────────────────────────────────────────────
+    D1:    { tier:1,  name:'Drone Bay I',      stats:{ maxBullets:1, shootCd:30 },                      next:['D2a','D2b'] },
+    D2a:   { tier:2,  name:'Scatter I',        stats:{ maxBullets:1, shootCd:40 },                      next:['D3a','D3b'] },
+    D2b:   { tier:2,  name:'Pulse I',          stats:{ shootCd:50, bulletSpd:1 },                       next:['D3a','D3b'] },
+    D3a:   { tier:3,  name:'Scatter II',       stats:{ maxBullets:1, shootCd:40 },                      next:['D4a','D4b'] },
+    D3b:   { tier:3,  name:'Pulse II',         stats:{ shootCd:50, bulletDmg:1 },                       next:['D4a','D4b'] },
+    D4a:   { tier:4,  name:'Swarmer',          stats:{ maxBullets:2, shootCd:30 },                      next:['D5a','D5b'] },
+    D4b:   { tier:4,  name:'Repeater',         stats:{ shootCd:60, bulletSpd:2 },                       next:['D5a','D5b'] },
+    D5a:   { tier:5,  name:'Hive',             stats:{ maxBullets:2, shootCd:40 },                      next:['D6a','D6b'] },
+    D5b:   { tier:5,  name:'Chain Pulse',      stats:{ shootCd:50, bulletDmg:1, bulletSpd:1 },          next:['D6a','D6b'] },
+    D6a:   { tier:6,  name:'Drone Horde',      stats:{ maxBullets:2, shootCd:40 },                      next:['D7a','D7b'] },
+    D6b:   { tier:6,  name:'Storm',            stats:{ shootCd:50, bulletDmg:1 },                       next:['D7a','D7b'] },
+    D7a:   { tier:7,  name:'Nanodrones',       stats:{ maxBullets:3, shootCd:30 },                      next:['D8a','D8b'] },
+    D7b:   { tier:7,  name:'Tempest',          stats:{ shootCd:50, bulletDmg:2 },                       next:['D8a','D8b'] },
+    D8a:   { tier:8,  name:'Swarm King',       stats:{ maxBullets:3, shootCd:40 },                      next:['D9a','D9b'] },
+    D8b:   { tier:8,  name:'Maelstrom',        stats:{ shootCd:40, bulletDmg:2, bulletSpd:1 },          next:['D9a','D9b'] },
+    D9a:   { tier:9,  name:'Legion',           stats:{ maxBullets:3, shootCd:40 },                      next:['D10a','D10b'] },
+    D9b:   { tier:9,  name:'Chaos Engine',     stats:{ shootCd:50, bulletDmg:3 },                       next:['D10a','D10b'] },
+    D10a:  { tier:10, name:'INFINITE SWARM',   stats:{ maxBullets:4, shootCd:50 },                      next:[] },
+    D10b:  { tier:10, name:'ARMAGEDDON',       stats:{ shootCd:60, bulletDmg:4, maxBullets:2 },         next:[] },
+
+    // ── Branch E: Energy / Velocity ───────────────────────────────────────────────
+    E1:    { tier:1,  name:'Energy Cell',      stats:{ bulletSpd:2, bulletDmg:1 },                      next:['E2a','E2b'] },
+    E2a:   { tier:2,  name:'Overclock I',      stats:{ bulletSpd:2, shootCd:30 },                       next:['E3a','E3b'] },
+    E2b:   { tier:2,  name:'Plasma I',         stats:{ bulletDmg:1, bulletSpd:1 },                      next:['E3a','E3b'] },
+    E3a:   { tier:3,  name:'Overclock II',     stats:{ bulletSpd:3, shootCd:40 },                       next:['E4a','E4b'] },
+    E3b:   { tier:3,  name:'Plasma II',        stats:{ bulletDmg:1, bulletSpd:2 },                      next:['E4a','E4b'] },
+    E4a:   { tier:4,  name:'Photon Drive',     stats:{ bulletSpd:3, shootCd:30 },                       next:['E5a','E5b'] },
+    E4b:   { tier:4,  name:'Ion Cannon',       stats:{ bulletDmg:2, bulletSpd:2 },                      next:['E5a','E5b'] },
+    E5a:   { tier:5,  name:'Light Barrier',    stats:{ bulletSpd:4, shootCd:30 },                       next:['E6a','E6b'] },
+    E5b:   { tier:5,  name:'Fusion Bolt',      stats:{ bulletDmg:2, bulletSpd:2 },                      next:['E6a','E6b'] },
+    E6a:   { tier:6,  name:'Warp Shot',        stats:{ bulletSpd:4, shootCd:40 },                       next:['E7a','E7b'] },
+    E6b:   { tier:6,  name:'Nova Burst',       stats:{ bulletDmg:2, bulletSpd:2 },                      next:['E7a','E7b'] },
+    E7a:   { tier:7,  name:'Hyperbeam',        stats:{ bulletSpd:5, shootCd:30 },                       next:['E8a','E8b'] },
+    E7b:   { tier:7,  name:'Antimatter',       stats:{ bulletDmg:3, bulletSpd:2 },                      next:['E8a','E8b'] },
+    E8a:   { tier:8,  name:'Quantum Lance',    stats:{ bulletSpd:5, shootCd:40 },                       next:['E9a','E9b'] },
+    E8b:   { tier:8,  name:'Dark Energy',      stats:{ bulletDmg:3, bulletSpd:3 },                      next:['E9a','E9b'] },
+    E9a:   { tier:9,  name:'Vortex Cannon',    stats:{ bulletSpd:6, shootCd:30 },                       next:['E10a','E10b'] },
+    E9b:   { tier:9,  name:'Singularity Bolt', stats:{ bulletDmg:4, bulletSpd:2 },                      next:['E10a','E10b'] },
+    E10a:  { tier:10, name:'LIGHT SPEED',      stats:{ bulletSpd:8, shootCd:50 },                       next:[] },
+    E10b:  { tier:10, name:'VOID DESTROYER',   stats:{ bulletDmg:5, bulletSpd:4 },                      next:[] },
   };
 
   root.BASE_STATS = {
@@ -108,13 +150,15 @@
     return s;
   };
 
-  // Returns 'S', 'F', 'T', or null
+  // Returns 'S', 'F', 'T', 'D', 'E', or null
   root.getShipBranch = function (upgradePath) {
     for (const id of (upgradePath || [])) {
       if (id === 'root') continue;
       if (id[0] === 'S') return 'S';
       if (id[0] === 'F') return 'F';
       if (id[0] === 'T') return 'T';
+      if (id[0] === 'D') return 'D';
+      if (id[0] === 'E') return 'E';
     }
     return null;
   };

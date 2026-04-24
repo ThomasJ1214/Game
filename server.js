@@ -65,12 +65,12 @@ const DIFF_PARAMS = {
     preferHuman: false,
   },
   beast: {
-    ticks:       5,     // very fast reactions
-    aimTol:      0.08,  // pinpoint accuracy
-    farmAimTol:  0.12,
-    retreatHp:   0.10,  // almost never retreats
-    huntRange:   1800,  // hunts from far away
-    leadFactor:  1.3,   // over-leads fast targets
+    ticks:       3,     // near-instant reactions
+    aimTol:      0.055, // surgical accuracy
+    farmAimTol:  0.10,
+    retreatHp:   0.05,  // almost never retreats — fights to the death
+    huntRange:   2400,  // hunts from very far away
+    leadFactor:  1.4,   // over-leads fast targets
     jitter:      0,
     boostHunt:   true,
     preferHuman: true,  // specifically hunts human players first
@@ -191,9 +191,9 @@ function makeXpBlock() {
 }
 
 // ─── GAME STATE FACTORY ───────────────────────────────────────────────────────
-function makeGameState(humanPlayers) {
+function makeGameState(humanPlayers, difficulty) {
   const ships = humanPlayers.map((p,i) => makeShip(p.id, i, p.name, false));
-  const botCount = Math.max(0, BOT_FILL - humanPlayers.length);
+  const botCount = difficulty === 'none' ? 0 : Math.max(0, BOT_FILL - humanPlayers.length);
   for (let i = 0; i < botCount; i++) {
     const idx = ships.length;
     ships.push(makeShip('bot_'+idx, idx, botName(), true));
@@ -304,25 +304,27 @@ function stepBullets(state) {
     if (b.homing && b.targetIndex != null) {
       const tgt = state.ships[b.targetIndex];
       if (tgt && tgt.alive) {
-        // ── Predictive intercept: iterative ballistic solution ─────────────
-        // Converges to the point where the missile will meet the target
-        // given target velocity, accounting for curved paths.
-        let t = Math.hypot(tgt.x - b.x, tgt.y - b.y) / MISSILE_SPD;
-        for (let i = 0; i < 5; i++) {
-          t = Math.hypot((tgt.x + tgt.vx * t) - b.x,
-                         (tgt.y + tgt.vy * t) - b.y) / MISSILE_SPD;
-        }
-        const ipX = tgt.x + tgt.vx * t;
-        const ipY = tgt.y + tgt.vy * t;
-
-        // ── Steer toward predicted intercept ──────────────────────────────
-        const dDist = Math.hypot(ipX - b.x, ipY - b.y);
-        if (dDist > 0) {
-          const dvx = (ipX - b.x) / dDist * MISSILE_SPD;
-          const dvy = (ipY - b.y) / dDist * MISSILE_SPD;
-          b.vx += (dvx - b.vx) * MISSILE_TURN;
-          b.vy += (dvy - b.vy) * MISSILE_TURN;
-        }
+        // ── Proportional Navigation guidance ──────────────────────────────
+        const N = 4; // navigation constant
+        const dx = tgt.x - b.x, dy = tgt.y - b.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        // Line-of-sight angle
+        const losAngle = Math.atan2(dy, dx);
+        // LOS rate (change since last frame)
+        const prevLos  = b._prevLos != null ? b._prevLos : losAngle;
+        let losRate    = losAngle - prevLos;
+        if (losRate >  Math.PI) losRate -= Math.PI * 2;
+        if (losRate < -Math.PI) losRate += Math.PI * 2;
+        b._prevLos = losAngle;
+        // Closing velocity (dot product of relative velocity along LOS)
+        const relVx = tgt.vx - b.vx, relVy = tgt.vy - b.vy;
+        const closingSpd = -(relVx * dx/dist + relVy * dy/dist);
+        const closingV   = Math.max(Math.abs(closingSpd), MISSILE_SPD * 0.5);
+        // Perpendicular acceleration
+        const perpX = -Math.sin(losAngle), perpY = Math.cos(losAngle);
+        const acc   = N * closingV * losRate;
+        b.vx += perpX * acc;
+        b.vy += perpY * acc;
 
         // ── Asteroid avoidance: perpendicular steering ─────────────────────
         for (const ast of ASTEROIDS) {
@@ -352,31 +354,62 @@ function stepBullets(state) {
 function resolveCollisions(state, room, now) {
   const remove = new Set();
   for (const b of state.bullets) {
-    // vs ships
-    for (const target of state.ships) {
-      if (remove.has(b.id)) break;
-      if (target.index === b.ownerIndex) continue;
-      if (!target.alive || target.invincible) continue;
-      if (Math.hypot(b.x-target.x, b.y-target.y) < SHIP_RADIUS+BULLET_RADIUS) {
-        const resist = (target.ss && target.ss.dmgReduce) || 0;
-        target.health -= Math.max(1, Math.round(b.dmg * (1 - resist)));
-        remove.add(b.id);
-        if (target.health <= 0) {
-          const killer = state.ships[b.ownerIndex];
-          handleDeath(target, killer, state, room, now);
+    if (b.homing) {
+      // ── Missile collision: passes through everything, only detonates on locked target ──
+      for (const target of state.ships) {
+        if (target.index === b.ownerIndex) continue;
+        if (!target.alive || target.invincible) continue;
+        if (Math.hypot(b.x-target.x, b.y-target.y) < SHIP_RADIUS+BULLET_RADIUS) {
+          // Always kill anything it touches (passes through)
+          target.health -= MISSILE_DMG;
+          if (target.health <= 0) {
+            const killer = state.ships[b.ownerIndex];
+            handleDeath(target, killer, state, room, now);
+          }
+          // Only detonate (remove) when hitting the actual locked target
+          if (target.index === b.targetIndex) {
+            remove.add(b.id);
+            break;
+          }
+          // Otherwise keeps flying through — mark target temporarily invincible so missile doesn't double-hit
         }
       }
-    }
-    // vs asteroids — missiles steer around them rather than being destroyed
-    if (!b.homing) {
+      // Missile destroys XP blocks it flies through but keeps moving
+      if (!remove.has(b.id)) {
+        for (const blk of state.xpBlocks) {
+          if (!blk.alive) continue;
+          if (Math.hypot(b.x-blk.x, b.y-blk.y) < blk.r+BULLET_RADIUS) {
+            blk.health = 0;
+            const shooter = state.ships[b.ownerIndex];
+            if (shooter && shooter.alive) giveXp(shooter, blk.xp);
+            blk.alive     = false;
+            blk.respawnAt = now + XP_BLOCK_RESPAWN_MS;
+          }
+        }
+      }
+    } else {
+      // ── Normal bullet collision ──
+      for (const target of state.ships) {
+        if (remove.has(b.id)) break;
+        if (target.index === b.ownerIndex) continue;
+        if (!target.alive || target.invincible) continue;
+        if (Math.hypot(b.x-target.x, b.y-target.y) < SHIP_RADIUS+BULLET_RADIUS) {
+          const resist = (target.ss && target.ss.dmgReduce) || 0;
+          target.health -= Math.max(1, Math.round(b.dmg * (1 - resist)));
+          remove.add(b.id);
+          if (target.health <= 0) {
+            const killer = state.ships[b.ownerIndex];
+            handleDeath(target, killer, state, room, now);
+          }
+        }
+      }
+      // vs asteroids
       for (const ast of ASTEROIDS) {
         if (!remove.has(b.id) && Math.hypot(b.x - ast.x, b.y - ast.y) < ast.r + BULLET_RADIUS) {
           remove.add(b.id);
         }
       }
-    }
-    // vs xp blocks — missiles pass straight through
-    if (!b.homing) {
+      // vs xp blocks
       for (const blk of state.xpBlocks) {
         if (remove.has(b.id)) break;
         if (!blk.alive) continue;
@@ -532,40 +565,53 @@ function botThinkBeast(bot, state, now) {
   if (state.tick - bot._botDecision < p.ticks) return bot._beastInp || inp;
   bot._botDecision = state.tick;
 
-  // ── Identify primary target: closest human first, else lowest-HP ship ──
+  // ── Stuck detection: every 60 ticks check if bot hasn't moved ────────
+  if (bot._lastX == null) { bot._lastX = bot.x; bot._lastY = bot.y; bot._lastXTick = state.tick; }
+  if (state.tick - (bot._lastXTick || 0) >= 60) {
+    const moved = Math.hypot(bot.x - bot._lastX, bot.y - bot._lastY);
+    const curState = bot._botState || 'wander';
+    if (moved < 40 && (curState === 'farm' || curState === 'wander' || curState === 'intercept')) {
+      bot._wanderPt = { x: rnd(400, WORLD_W - 400), y: rnd(400, WORLD_H - 400) };
+      inp.w = true;
+    }
+    bot._lastX = bot.x; bot._lastY = bot.y; bot._lastXTick = state.tick;
+  }
+
+  // ── Identify primary target: closest human first, then weighted score ──
   let target = null, targetDist = Infinity;
+  let bestHumanDist = Infinity;
   for (const s of state.ships) {
     if (s.index === bot.index || !s.alive) continue;
     const d = Math.hypot(s.x - bot.x, s.y - bot.y);
-    if (!s.isBot && d < 2200) { target = s; targetDist = d; break; }
+    if (!s.isBot && d < bestHumanDist) { bestHumanDist = d; target = s; targetDist = d; }
   }
   if (!target) {
-    // Nearest any ship, prefer lower HP (easier kill)
+    // No human visible: pick ship with best kill-efficiency score (dist penalised by HP remaining)
     for (const s of state.ships) {
       if (s.index === bot.index || !s.alive) continue;
-      const d    = Math.hypot(s.x - bot.x, s.y - bot.y);
-      const score = d - (1 - s.health / Math.max(s.maxHealth, 1)) * 400;
+      const d     = Math.hypot(s.x - bot.x, s.y - bot.y);
+      const score = d - (1 - s.health / Math.max(s.maxHealth || s.ss.health, 1)) * 600;
       if (score < targetDist) { targetDist = d; target = s; }
     }
   }
 
-  // ── Detect incoming bullet threats within 260 px ──────────────────────
+  // ── Detect incoming bullet threats within 380 px ──────────────────────
   let dodgeX = 0, dodgeY = 0, dodgeLevel = 0;
   for (const b of state.bullets) {
     if (b.ownerIndex === bot.index) continue;
+    if (b.homing) continue; // missiles — beast can't dodge them, don't react
     const dx = bot.x - b.x, dy = bot.y - b.y;
     const dist2 = Math.hypot(dx, dy);
-    if (dist2 > 300) continue;
+    if (dist2 > 380) continue;
     const bspd = Math.hypot(b.vx, b.vy) || 1;
     const dot  = (b.vx * (-dx) + b.vy * (-dy)) / (bspd * dist2 + 0.001);
-    if (dot < 0.55) continue;  // bullet not aimed at us
-    const threat = (1 - dist2 / 300) * dot;
-    // Perpendicular escape direction (away from bullet path)
+    if (dot < 0.45) continue;  // bullet not aimed at us
+    const threat = (1 - dist2 / 380) * dot * dot;  // quadratic falloff, very sensitive
     dodgeX += (-dy / dist2) * threat;
     dodgeY += ( dx / dist2) * threat;
     dodgeLevel += threat;
   }
-  const dodging = dodgeLevel > 0.35;
+  const dodging = dodgeLevel > 0.25;
 
   // ── Compute weighted flee vector from all nearby enemies ──────────────
   let fleeX = 0, fleeY = 0;
@@ -721,6 +767,17 @@ function botThink(bot, state, now, difficulty) {
   // ── Re-evaluate state & target every p.ticks ─────────────────────────
   if (state.tick - bot._botDecision >= p.ticks) {
     bot._botDecision = state.tick;
+
+    // ── Stuck detection: every 60 ticks check if bot hasn't moved ──────
+    if (bot._lastX == null) { bot._lastX = bot.x; bot._lastY = bot.y; bot._lastXTick = state.tick; }
+    if (state.tick - (bot._lastXTick || 0) >= 60) {
+      const moved = Math.hypot(bot.x - bot._lastX, bot.y - bot._lastY);
+      const curState = bot._botState || 'wander';
+      if (moved < 40 && (curState === 'farm' || curState === 'wander' || curState === 'intercept')) {
+        bot._wanderPt = { x: rnd(300, WORLD_W - 300), y: rnd(300, WORLD_H - 300) };
+      }
+      bot._lastX = bot.x; bot._lastY = bot.y; bot._lastXTick = state.tick;
+    }
 
     const hpFrac = bot.health / bot.ss.health;
 
@@ -958,9 +1015,9 @@ io.on('connection', socket => {
     const p = room.players.find(p=>p.id===socket.id);
     if (!p || p.index !== 0) return;
 
-    room.botDifficulty = ['easy','medium','beast'].includes(difficulty) ? difficulty : 'medium';
+    room.botDifficulty = ['easy','medium','beast','none'].includes(difficulty) ? difficulty : 'medium';
     room.gameStarted   = true;
-    room.gameState     = makeGameState(room.players);
+    room.gameState     = makeGameState(room.players, room.botDifficulty);
     // Make sure inputs array covers all ships
     while (room.inputs.length < room.gameState.ships.length) room.inputs.push(emptyInput());
 
@@ -1011,11 +1068,11 @@ io.on('connection', socket => {
     if (!pl) return;
     const ship = room.gameState.ships[pl.index];
     if (!ship || !ship.alive || !ship.isThomas) return;
-    const now2 = Date.now();
-    if (now2 - ship.missileCooldown < MISSILE_CD) return;
     const tgt = room.gameState.ships[targetIndex];
     if (!tgt || !tgt.alive || tgt.index === ship.index) return;
-    ship.missileCooldown = now2;
+    // Cap concurrent missiles: max 3 homing bullets owned by this player at once
+    const activeMissiles = room.gameState.bullets.filter(b => b.homing && b.ownerIndex === ship.index).length;
+    if (activeMissiles >= 3) return;
     const ang = Math.atan2(tgt.y - ship.y, tgt.x - ship.x);
     room.gameState.bullets.push({
       id: nextBulletId++,
@@ -1030,6 +1087,39 @@ io.on('connection', socket => {
       targetIndex,
       maxLife: MISSILE_LIFE,
     });
+  });
+
+  socket.on('fire_salvo', () => {
+    const code = socketRoom[socket.id];
+    const room = code && rooms[code];
+    if (!room || !room.gameState) return;
+    const pl = room.players.find(p=>p.id===socket.id);
+    if (!pl) return;
+    const ship = room.gameState.ships[pl.index];
+    if (!ship || !ship.alive || !ship.isThomas) return;
+    // Gather all living enemies
+    const enemies = room.gameState.ships.filter(s => s.alive && s.index !== ship.index);
+    if (enemies.length === 0) return;
+    // Cap total concurrent missiles at 14
+    const existing = room.gameState.bullets.filter(b => b.homing && b.ownerIndex === ship.index).length;
+    const slots = Math.max(0, 14 - existing);
+    const targets = enemies.slice(0, slots);
+    for (const tgt of targets) {
+      const ang = Math.atan2(tgt.y - ship.y, tgt.x - ship.x);
+      room.gameState.bullets.push({
+        id: nextBulletId++,
+        ownerIndex: ship.index,
+        x: ship.x + Math.cos(ship.angle) * 22,
+        y: ship.y + Math.sin(ship.angle) * 22,
+        vx: Math.cos(ang) * MISSILE_SPD,
+        vy: Math.sin(ang) * MISSILE_SPD,
+        dmg: MISSILE_DMG,
+        born: room.gameState.tick,
+        homing: true,
+        targetIndex: tgt.index,
+        maxLife: MISSILE_LIFE,
+      });
+    }
   });
 
   socket.on('leave_room',  () => cleanup(socket));

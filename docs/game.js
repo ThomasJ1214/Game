@@ -174,6 +174,10 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
           }
           e.preventDefault();
         }
+        if (e.code === 'KeyO') {
+          _socket.emit('fire_salvo');
+          e.preventDefault();
+        }
       }
     }
   };
