@@ -6,6 +6,12 @@
 
 const $ = id => document.getElementById(id);
 
+const LOBBY_COLORS = [
+  '#00ffff','#ff00ff','#ffff00','#00ff88','#ff8844',
+  '#8888ff','#ff4488','#44ffaa','#ff6666','#66aaff',
+  '#aaff66','#ffaa44','#cc44ff','#44ffff','#ff44cc',
+];
+
 const screens = {
   menu:     $('screen-menu'),
   lobby:    $('screen-lobby'),
@@ -37,13 +43,6 @@ const playerListEl = $('player-list');
 const btnStart     = $('btn-start');
 const btnLobbyBack = $('btn-lobby-back');
 const lobbyStatus  = $('lobby-status');
-
-// Game over elements
-const goWinner    = $('go-winner');
-const goScores    = $('go-scores');
-const btnRematch  = $('btn-rematch');
-const btnGoBack   = $('btn-go-back');
-const rematchWait = $('rematch-wait');
 
 // ─────────────────────────────────────────────────────────────
 // STATE
@@ -203,15 +202,18 @@ function doJoin() {
 
 function renderPlayerList(players) {
   playerListEl.innerHTML = '';
-  for (let i = 0; i < 2; i++) {
+  // Show all joined players + one empty waiting slot (if room not full)
+  const showCount = Math.min(players.length + 1, 15);
+  for (let i = 0; i < showCount; i++) {
     const p    = players.find(p => p.index === i);
+    const col  = LOBBY_COLORS[i % LOBBY_COLORS.length];
     const slot = document.createElement('div');
-    slot.className = `player-slot ${p ? (i === 0 ? 'p1' : 'p2') : 'empty'}`;
+    slot.className = `player-slot ${p ? 'joined' : 'empty'}`;
     const youTag = (p && p.index === myPlayerIndex)
       ? ' <span class="you-tag">(you)</span>' : '';
     slot.innerHTML =
-      `<span class="slot-num">P${i + 1}</span>` +
-      `<span class="slot-name">${p ? p.name : 'Waiting…'}</span>` +
+      `<span class="slot-num" style="color:${p ? col : ''}">P${i + 1}</span>` +
+      `<span class="slot-name" style="color:${p ? col : ''}">${p ? p.name : 'Waiting…'}</span>` +
       youTag;
     playerListEl.appendChild(slot);
   }
@@ -263,21 +265,6 @@ btnLobbyBack.addEventListener('click', () => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// GAME OVER ACTIONS
-// ─────────────────────────────────────────────────────────────
-
-btnRematch.addEventListener('click', () => {
-  btnRematch.disabled = true;
-  rematchWait.classList.remove('hidden');
-  socket.emit('rematch_vote');
-});
-
-btnGoBack.addEventListener('click', () => {
-  if (socket) { socket.emit('leave_room'); socket.disconnect(); socket = null; }
-  location.reload();
-});
-
-// ─────────────────────────────────────────────────────────────
 // SOCKET HANDLERS
 // ─────────────────────────────────────────────────────────────
 
@@ -326,49 +313,10 @@ function setupSocketHandlers() {
     updateStartButton(players);
   });
 
-  socket.on('game_start', ({ gameState, yourIndex }) => {
+  socket.on('game_start', ({ gameState, yourIndex, asteroids }) => {
     myPlayerIndex = yourIndex;
     showScreen('game');
-    initGame(socket, gameState, yourIndex);
-  });
-
-  socket.on('game_over', ({ winner, winnerName, playerNames, scores }) => {
-    if (typeof stopGame === 'function') stopGame();
-    const cls = winner === 0 ? 'p1-wins' : 'p2-wins';
-    goWinner.textContent = `${winnerName} wins!`;
-    goWinner.className   = `winner-name ${cls}`;
-    goScores.innerHTML   =
-      `<span class="sp1">${playerNames[0]}: ${scores[0]}</span>` +
-      `<span class="sdiv">vs</span>` +
-      `<span class="sp2">${playerNames[1]}: ${scores[1]}</span>`;
-    btnRematch.disabled = false;
-    rematchWait.classList.add('hidden');
-    showScreen('gameover');
-  });
-
-  socket.on('rematch_ready', ({ votes }) => {
-    rematchWait.textContent = `Waiting for opponent… (${votes}/2 ready)`;
-    rematchWait.classList.remove('hidden');
-  });
-
-  socket.on('rematch_start', ({ gameState, yourIndex }) => {
-    myPlayerIndex = yourIndex;
-    btnRematch.disabled = false;
-    rematchWait.classList.add('hidden');
-    showScreen('game');
-    initGame(socket, gameState, yourIndex);
-  });
-
-  socket.on('player_disconnected', ({ name }) => {
-    if (typeof stopGame === 'function') stopGame();
-    $('disc-msg').textContent = `${name} disconnected.`;
-    const overlay = $('disc-overlay');
-    overlay.classList.remove('hidden');
-    overlay.classList.add('visible');
-    $('btn-disc-back').addEventListener('click', () => {
-      if (socket) { socket.disconnect(); socket = null; }
-      location.reload();
-    }, { once: true });
+    initGame(socket, gameState, yourIndex, asteroids);
   });
 
   socket.on('disconnect', (reason) => {

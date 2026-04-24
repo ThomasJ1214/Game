@@ -12,8 +12,8 @@ const io     = new Server(server, { cors: { origin: '*', methods: ['GET','POST']
 app.use(express.static(path.join(__dirname, 'docs')));
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
-const WORLD_W        = 3200;
-const WORLD_H        = 2400;
+const WORLD_W        = 9600;
+const WORLD_H        = 7200;
 const SHIP_RADIUS    = 16;
 const BULLET_RADIUS  = 4;
 const BULLET_LIFE    = 120;      // ticks
@@ -22,19 +22,73 @@ const INVINCIBLE_MS  = 2500;
 const BOOST_MULT     = 2.4;
 const BOOST_MULT_SPD = 2.2;
 const MAX_PLAYERS    = 15;
-const BOT_FILL       = 6;        // total entities when game starts (humans + bots)
-const XP_BLOCK_COUNT = 45;
-const XP_KILL_PLAYER = 150;
-const XP_KILL_BOT    = 80;
+const BOT_FILL       = 15;       // total entities when game starts (humans + bots)
+const XP_BLOCK_COUNT = 200;
+const XP_KILL_PLAYER      = 150;
+const XP_KILL_BOT         = 80;
+const XP_BLOCK_RESPAWN_MS = 15000;
 const ANGULAR_ACCEL  = 0.025;
 const ANGULAR_DRAG   = 0.72;
 const ANGULAR_MAX    = 0.088;
+
+// Bot AI tuning
+const BOT_WALL_MARGIN = 390;   // px from world edge before steering away
+const BOT_AST_MARGIN  = 90;    // extra clearance around asteroids
+const BOT_RETREAT_HP  = 0.30;  // flee below this fraction of max HP
+const BOT_HUNT_RANGE  = 1000;  // engage the nearest enemy within this distance
 
 const COLORS = [
   '#00ffff','#ff00ff','#ffff00','#00ff88','#ff8844',
   '#8888ff','#ff4488','#44ffaa','#ff6666','#66aaff',
   '#aaff66','#ffaa44','#cc44ff','#44ffff','#ff44cc',
 ];
+
+// ─── ASTEROIDS ───────────────────────────────────────────────────────────────
+// Deterministic obstacle field — same layout every server start.
+const ASTEROIDS = (() => {
+  let s = 31415;
+  const rng = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000; };
+  const result = [];
+  // [cx, cy, count, spread, rMin, rMax]
+  // All positions/spreads scaled 1.5× to match the 9600×7200 world;
+  // extra clusters added for the larger map area.
+  const clusters = [
+    [4800, 3600, 6, 450,  60, 130],   // center
+    [1650, 1425, 5, 390,  45, 100],   // NW
+    [7950, 1425, 4, 345,  50,  95],   // NE
+    [1500, 5775, 5, 405,  45, 105],   // SW
+    [7950, 5775, 4, 375,  50, 100],   // SE
+    [4800, 1350, 3, 315,  40,  85],   // N
+    [4800, 5850, 3, 315,  45,  80],   // S
+    [1500, 3600, 3, 285,  40,  80],   // W
+    [8100, 3600, 3, 285,  40,  80],   // E
+    [3300, 2400, 3, 240,  35,  70],   // NW-inner
+    [6300, 2400, 3, 240,  35,  70],   // NE-inner
+    [3300, 4800, 3, 240,  35,  70],   // SW-inner
+    [6300, 4800, 3, 240,  35,  70],   // SE-inner
+    // Extra clusters filling the expanded area
+    [4800, 2400, 3, 240,  35,  70],   // N-inner
+    [4800, 4800, 3, 240,  35,  70],   // S-inner
+    [2400, 3600, 3, 240,  35,  70],   // W-inner
+    [7200, 3600, 3, 240,  35,  70],   // E-inner
+    [2200, 1000, 3, 200,  35,  70],   // NNW corner
+    [7400, 1000, 3, 200,  35,  70],   // NNE corner
+    [2200, 6200, 3, 200,  35,  70],   // SSW corner
+    [7400, 6200, 3, 200,  35,  70],   // SSE corner
+  ];
+  for (const [cx, cy, count, spread, rMin, rMax] of clusters) {
+    for (let i = 0; i < count; i++) {
+      const angle = rng() * Math.PI * 2;
+      const dist  = rng() * spread;
+      result.push({
+        x: Math.round(cx + Math.cos(angle) * dist),
+        y: Math.round(cy + Math.sin(angle) * dist),
+        r: Math.round(rMin + rng() * (rMax - rMin)),
+      });
+    }
+  }
+  return result;
+})();
 
 // ─── IN-MEMORY STATE ──────────────────────────────────────────────────────────
 const rooms      = {};
@@ -60,7 +114,7 @@ function makeShip(id, index, name, isBot) {
   const ss = computeShipStats(['root']);
   return {
     id, index, name, isBot,
-    x: rnd(100, WORLD_W-100), y: rnd(100, WORLD_H-100),
+    x: rnd(300, WORLD_W-300), y: rnd(300, WORLD_H-300),
     angle: Math.random() * Math.PI * 2,
     vx:0, vy:0, angularVel:0,
     health: ss.health, alive: true,
@@ -74,21 +128,23 @@ function makeShip(id, index, name, isBot) {
     ss,
     respawnAt: 0,
     // bot state
-    _botTarget: null, _botDecision: 0, _botState: 'hunt',
+    _botTarget: null, _botDecision: 0, _botState: 'hunt', _wanderPt: null,
   };
 }
 
 // ─── XP BLOCK FACTORY ─────────────────────────────────────────────────────────
 function makeXpBlock() {
   return {
-    id:     nextBlockId++,
-    x:      rnd(60, WORLD_W-60),
-    y:      rnd(60, WORLD_H-60),
-    r:      14 + Math.random() * 14,
-    health: 2 + Math.floor(Math.random() * 3),
-    maxHealth: 0,  // set below
-    xp:     30 + Math.floor(Math.random() * 80),
-    hue:    Math.floor(Math.random() * 360),
+    id:        nextBlockId++,
+    x:         rnd(60, WORLD_W-60),
+    y:         rnd(60, WORLD_H-60),
+    r:         14 + Math.random() * 14,
+    health:    2 + Math.floor(Math.random() * 3),
+    maxHealth: 0,
+    xp:        30 + Math.floor(Math.random() * 80),
+    hue:       Math.floor(Math.random() * 360),
+    alive:     true,
+    respawnAt: 0,
   };
 }
 
@@ -103,7 +159,7 @@ function makeGameState(humanPlayers) {
   const xpBlocks = Array.from({length: XP_BLOCK_COUNT}, () => {
     const b = makeXpBlock(); b.maxHealth = b.health; return b;
   });
-  return { ships, bullets:[], xpBlocks, tick:0, status:'playing' };
+  return { ships, bullets:[], xpBlocks, tick:0 };
 }
 
 const BOT_NAMES = ['Zephyr','Orion','Nova','Vega','Axle','Kira','Rho','Bolt','Hex','Pix'];
@@ -166,6 +222,20 @@ function stepShip(ship, inp, now) {
   if (ship.x > WORLD_W-SHIP_RADIUS) { ship.x = WORLD_W-SHIP_RADIUS; ship.vx = -Math.abs(ship.vx)*0.5; }
   if (ship.y < SHIP_RADIUS)         { ship.y = SHIP_RADIUS;         ship.vy =  Math.abs(ship.vy)*0.5; }
   if (ship.y > WORLD_H-SHIP_RADIUS) { ship.y = WORLD_H-SHIP_RADIUS; ship.vy = -Math.abs(ship.vy)*0.5; }
+
+  // Asteroid bounce
+  for (const ast of ASTEROIDS) {
+    const ax = ship.x - ast.x, ay = ship.y - ast.y;
+    const d = Math.hypot(ax, ay);
+    const minD = SHIP_RADIUS + ast.r;
+    if (d > 0 && d < minD) {
+      const nx = ax / d, ny = ay / d;
+      ship.x = ast.x + nx * minD;
+      ship.y = ast.y + ny * minD;
+      const dot = ship.vx * nx + ship.vy * ny;
+      if (dot < 0) { ship.vx -= 1.5 * dot * nx; ship.vy -= 1.5 * dot * ny; }
+    }
+  }
 }
 
 function tryFire(ship, bullets, tick, now) {
@@ -199,10 +269,12 @@ function resolveCollisions(state, room, now) {
   for (const b of state.bullets) {
     // vs ships
     for (const target of state.ships) {
+      if (remove.has(b.id)) break;
       if (target.index === b.ownerIndex) continue;
       if (!target.alive || target.invincible) continue;
       if (Math.hypot(b.x-target.x, b.y-target.y) < SHIP_RADIUS+BULLET_RADIUS) {
-        target.health -= b.dmg;
+        const resist = (target.ss && target.ss.dmgReduce) || 0;
+        target.health -= Math.max(1, Math.round(b.dmg * (1 - resist)));
         remove.add(b.id);
         if (target.health <= 0) {
           const killer = state.ships[b.ownerIndex];
@@ -210,17 +282,24 @@ function resolveCollisions(state, room, now) {
         }
       }
     }
+    // vs asteroids
+    for (const ast of ASTEROIDS) {
+      if (!remove.has(b.id) && Math.hypot(b.x - ast.x, b.y - ast.y) < ast.r + BULLET_RADIUS) {
+        remove.add(b.id);
+      }
+    }
     // vs xp blocks
     for (const blk of state.xpBlocks) {
+      if (remove.has(b.id)) break;
+      if (!blk.alive) continue;
       if (Math.hypot(b.x-blk.x, b.y-blk.y) < blk.r+BULLET_RADIUS) {
         blk.health--;
         remove.add(b.id);
         if (blk.health <= 0) {
           const shooter = state.ships[b.ownerIndex];
           if (shooter && shooter.alive) giveXp(shooter, blk.xp);
-          // respawn block
-          const nb = makeXpBlock(); nb.maxHealth = nb.health;
-          Object.assign(blk, nb, {id: blk.id});
+          blk.alive     = false;
+          blk.respawnAt = now + XP_BLOCK_RESPAWN_MS;
         }
       }
     }
@@ -247,7 +326,7 @@ function handleDeath(ship, killer, state, room, now) {
   ship.alive   = false;
   ship.health  = 0;
   ship.deaths++;
-  revertUpgrade(ship);
+  if (ship.tier > 1) revertUpgrade(ship);
 
   if (killer) {
     killer.kills++;
@@ -281,8 +360,8 @@ function tryRespawn(ship, now) {
   ship.alive         = true;
   ship.health        = ship.ss.health;
   ship.vx = ship.vy  = ship.angularVel = 0;
-  ship.x             = rnd(100, WORLD_W-100);
-  ship.y             = rnd(100, WORLD_H-100);
+  ship.x             = rnd(300, WORLD_W-300);
+  ship.y             = rnd(300, WORLD_H-300);
   ship.invincible      = true;
   ship.invincibleUntil = now + INVINCIBLE_MS;
   ship.respawnAt     = 0;
@@ -294,73 +373,147 @@ function tryRespawn(ship, now) {
 function botThink(bot, state, now) {
   if (!bot.alive) return emptyInput();
 
-  // Re-evaluate target every 10 ticks (~330ms)
-  if (state.tick - bot._botDecision >= 10) {
+  // ── Immediately apply any pending upgrade ─────────────────────────────
+  if (bot.pendingUpgrade) {
+    const node = UPGRADE_TREE[bot.upgradePath[bot.upgradePath.length - 1]];
+    if (node && node.next.length > 0) {
+      // At the root, assign a branch based on bot index; otherwise prefer a/b by personality
+      const mixedBranches = node.next.some(id => id[0] !== node.next[0][0]);
+      let pick;
+      if (mixedBranches) {
+        const branches = ['S', 'F', 'T'];
+        const prefer   = branches[bot.index % 3];
+        pick = node.next.find(id => id[0] === prefer) || node.next[0];
+      } else {
+        const preferA = (bot.index % 2 === 0);
+        pick = preferA
+          ? (node.next.find(id => id.endsWith('a')) || node.next[0])
+          : (node.next.find(id => id.endsWith('b')) || node.next[node.next.length - 1]);
+      }
+      applyUpgrade(bot, pick);
+    } else {
+      bot.pendingUpgrade = false;
+    }
+  }
+
+  // ── Re-evaluate state & target every 12 ticks (~400 ms) ──────────────
+  if (state.tick - bot._botDecision >= 12) {
     bot._botDecision = state.tick;
 
-    // Auto-pick upgrade
-    if (bot.pendingUpgrade) {
-      const node = UPGRADE_TREE[bot.upgradePath[bot.upgradePath.length-1]];
-      if (node && node.next.length > 0) {
-        applyUpgrade(bot, node.next[Math.floor(Math.random()*node.next.length)]);
-      } else {
-        bot.pendingUpgrade = false;
-      }
-    }
+    const hpFrac = bot.health / bot.ss.health;
 
-    // Find nearest living enemy
-    let bestDist = Infinity, bestTarget = null;
+    // Nearest living enemy
+    let nearEnemyDist = Infinity, nearEnemy = null;
     for (const s of state.ships) {
       if (s.index === bot.index || !s.alive) continue;
-      const d = Math.hypot(s.x-bot.x, s.y-bot.y);
-      if (d < bestDist) { bestDist = d; bestTarget = s; }
+      const d = Math.hypot(s.x - bot.x, s.y - bot.y);
+      if (d < nearEnemyDist) { nearEnemyDist = d; nearEnemy = s; }
     }
-    // If no enemy within 600, look for nearest XP block
-    if (!bestTarget || bestDist > 800) {
-      let bd2=Infinity, bt2=null;
-      for (const blk of state.xpBlocks) {
-        const d = Math.hypot(blk.x-bot.x, blk.y-bot.y);
-        if (d < bd2) { bd2=d; bt2=blk; }
-      }
-      bot._botTarget = (!bestTarget || bd2 < 300) ? {type:'block',obj:bt2} : {type:'ship',obj:bestTarget};
+    // Nearest alive XP block
+    let nearBlockDist = Infinity, nearBlock = null;
+    for (const blk of state.xpBlocks) {
+      if (!blk.alive) continue;
+      const d = Math.hypot(blk.x - bot.x, blk.y - bot.y);
+      if (d < nearBlockDist) { nearBlockDist = d; nearBlock = blk; }
+    }
+
+    if (hpFrac <= BOT_RETREAT_HP && nearEnemy) {
+      bot._botState  = 'retreat';
+      bot._botTarget = { type: 'flee', obj: nearEnemy };
+    } else if (nearEnemy && nearEnemyDist <= BOT_HUNT_RANGE) {
+      bot._botState  = 'hunt';
+      bot._botTarget = { type: 'ship', obj: nearEnemy };
+    } else if (nearBlock) {
+      bot._botState  = 'farm';
+      bot._botTarget = { type: 'block', obj: nearBlock };
     } else {
-      bot._botTarget = {type:'ship', obj:bestTarget};
+      // Wander: pick a new waypoint when the old one is reached
+      bot._botState = 'wander';
+      if (!bot._wanderPt ||
+          Math.hypot(bot._wanderPt.x - bot.x, bot._wanderPt.y - bot.y) < 150) {
+        bot._wanderPt = { x: rnd(300, WORLD_W - 300), y: rnd(300, WORLD_H - 300) };
+      }
+      bot._botTarget = { type: 'wander', obj: bot._wanderPt };
     }
   }
 
   const inp = emptyInput();
-  if (!bot._botTarget) return inp;
-
-  const tgt = bot._botTarget.obj;
+  const tgt = bot._botTarget && bot._botTarget.obj;
   if (!tgt) return inp;
 
-  const dx = tgt.x - bot.x, dy = tgt.y - bot.y;
-  const dist = Math.hypot(dx, dy);
-  const targetAngle = Math.atan2(dy, dx);
-  let diff = normalAngle(targetAngle - bot.angle);
-  if (diff > Math.PI) diff -= Math.PI*2;
-
-  if (diff >  0.08) inp.d = true;
-  if (diff < -0.08) inp.a = true;
-
-  if (bot._botTarget.type === 'ship') {
-    if (dist > 200) inp.w = true;
-    else if (dist < 80) inp.s = true;
-    if (Math.abs(diff) < 0.25) inp.space = true;
-    if (dist > 500 && now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
+  // ── Compute aim point based on state ─────────────────────────────────
+  let aimX, aimY;
+  if (bot._botState === 'retreat') {
+    // Project a point in the direction directly away from the threat
+    const ex = tgt.x - bot.x, ey = tgt.y - bot.y;
+    const ed = Math.hypot(ex, ey) || 1;
+    aimX = bot.x - (ex / ed) * 500;
+    aimY = bot.y - (ey / ed) * 500;
+  } else if (bot._botState === 'hunt') {
+    // Lead-shot: predict target position when bullet arrives
+    const dist    = Math.hypot(tgt.x - bot.x, tgt.y - bot.y);
+    const travelT = Math.min(dist / Math.max(bot.ss.bulletSpd, 1), 35);
+    aimX = tgt.x + tgt.vx * travelT;
+    aimY = tgt.y + tgt.vy * travelT;
   } else {
-    // Collect block
-    if (dist > 40) inp.w = true;
-    if (Math.abs(diff) < 0.3) inp.space = true;
+    aimX = tgt.x;
+    aimY = tgt.y;
+  }
+
+  // ── Wall avoidance: nudge aim point away from world edges ─────────────
+  if (bot.x < BOT_WALL_MARGIN)               aimX += (BOT_WALL_MARGIN - bot.x) * 3.5;
+  if (bot.x > WORLD_W - BOT_WALL_MARGIN)     aimX -= (BOT_WALL_MARGIN - (WORLD_W - bot.x)) * 3.5;
+  if (bot.y < BOT_WALL_MARGIN)               aimY += (BOT_WALL_MARGIN - bot.y) * 3.5;
+  if (bot.y > WORLD_H - BOT_WALL_MARGIN)     aimY -= (BOT_WALL_MARGIN - (WORLD_H - bot.y)) * 3.5;
+
+  // ── Asteroid avoidance: perpendicular steering around nearby rocks ─────
+  for (const ast of ASTEROIDS) {
+    const adx   = ast.x - bot.x, ady = ast.y - bot.y;
+    const adist = Math.hypot(adx, ady);
+    const clear = ast.r + SHIP_RADIUS + BOT_AST_MARGIN;
+    if (adist < clear && adist > 0) {
+      // Perpendicular direction — choose side aligned with current velocity
+      const perpX = -ady / adist, perpY = adx / adist;
+      const sign  = (bot.vx * perpX + bot.vy * perpY) >= 0 ? 1 : -1;
+      const str   = (clear - adist) * 5;
+      aimX += perpX * str * sign;
+      aimY += perpY * str * sign;
+    }
+  }
+
+  // ── Steer toward computed aim point ───────────────────────────────────
+  const dx   = aimX - bot.x, dy = aimY - bot.y;
+  const tgtA = Math.atan2(dy, dx);
+  let diff   = normalAngle(tgtA - bot.angle);
+  if (diff > Math.PI) diff -= Math.PI * 2;
+  if (diff >  0.07) inp.d = true;
+  if (diff < -0.07) inp.a = true;
+
+  // ── Throttle / fire / boost per state ────────────────────────────────
+  if (bot._botState === 'retreat') {
+    inp.w = true;
+    if (now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
+
+  } else if (bot._botState === 'hunt') {
+    const rawDist = Math.hypot(tgt.x - bot.x, tgt.y - bot.y);
+    if (rawDist > 300)                         inp.w = true;
+    else if (rawDist < 130)                    inp.s = true;  // reverse if too close
+    if (Math.abs(diff) < 0.18)                 inp.space = true;
+    if (rawDist > 650 && now - bot.lastBoost >= bot.ss.boostCd) inp.shift = true;
+
+  } else if (bot._botState === 'farm') {
+    if (Math.hypot(tgt.x - bot.x, tgt.y - bot.y) > 60) inp.w = true;
+    if (Math.abs(diff) < 0.22)                 inp.space = true;
+
+  } else { // wander
+    if (Math.hypot(tgt.x - bot.x, tgt.y - bot.y) > 100) inp.w = true;
   }
 
   return inp;
 }
 
 // ─── BROADCAST ───────────────────────────────────────────────────────────────
-function broadcast(room) {
-  const gs = room.gameState;
-  // Slim down ship data for network
+function cleanState(gs) {
   const ships = gs.ships.map(s => ({
     id:s.id, index:s.index, name:s.name, isBot:s.isBot,
     x:s.x, y:s.y, angle:s.angle, vx:s.vx, vy:s.vy,
@@ -372,8 +525,12 @@ function broadcast(room) {
     lastBoost:s.lastBoost, respawnAt:s.respawnAt,
     ss: { boostCd:s.ss.boostCd, health:s.ss.health },
   }));
-  const payload = { ships, bullets:gs.bullets, xpBlocks:gs.xpBlocks, tick:gs.tick };
-  for (const p of room.players) io.to(p.id).emit('game_tick', payload);
+  return { ships, bullets: gs.bullets, xpBlocks: gs.xpBlocks.filter(b => b.alive), tick: gs.tick };
+}
+
+function broadcast(room) {
+  const payload = cleanState(room.gameState);
+  for (const p of room.players) io.to(p.id).emit('game_tick', { gameState: payload });
 }
 
 // ─── GAME LOOP ────────────────────────────────────────────────────────────────
@@ -394,6 +551,14 @@ function startLoop(room) {
       if (ship.alive && ship.ss.regenRate > 0) {
         const interval = Math.max(1, Math.floor(300 / ship.ss.regenRate));
         if (state.tick % interval === 0 && ship.health < ship.ss.health) ship.health++;
+      }
+    }
+
+    // Revive XP blocks after respawn delay
+    for (const blk of state.xpBlocks) {
+      if (!blk.alive && blk.respawnAt > 0 && now >= blk.respawnAt) {
+        const nb = makeXpBlock(); nb.maxHealth = nb.health;
+        Object.assign(blk, nb, { id: blk.id });
       }
     }
 
@@ -436,6 +601,13 @@ function cleanup(socket) {
     for (const p of room.players) {
       io.to(p.id).emit('player_left', { name: leaver ? leaver.name : 'Player' });
     }
+    // Shut down the room 15 s after the last human leaves
+    if (room.players.length === 0 && !room.shutdownTimer) {
+      room.shutdownTimer = setTimeout(() => {
+        clearInterval(room.gameLoopInterval);
+        delete rooms[code];
+      }, 15000);
+    }
   } else {
     // Game not started yet, clean up if empty
     if (room.players.length === 0) {
@@ -457,6 +629,7 @@ io.on('connection', socket => {
       roomCode: code,
       players:  [{ id:socket.id, name:pName, index:0 }],
       gameStarted: false, gameState:null, gameLoopInterval:null,
+      shutdownTimer: null,
       inputs: Array.from({length:MAX_PLAYERS}, emptyInput),
     };
     socketRoom[socket.id] = code;
@@ -495,9 +668,11 @@ io.on('connection', socket => {
     for (const pl of room.players) {
       io.to(pl.id).emit('game_start', {
         yourIndex:   pl.index,
+        gameState:   cleanState(room.gameState),
         upgradeTree: UPGRADE_TREE,
         worldW:      WORLD_W,
         worldH:      WORLD_H,
+        asteroids:   ASTEROIDS,
       });
     }
     startLoop(room);
