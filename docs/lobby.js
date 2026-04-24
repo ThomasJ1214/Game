@@ -232,13 +232,11 @@ function renderPlayerList(players) {
 }
 
 function updateStartButton(players) {
-  const ready   = players.length >= 2;
-  const canStart = ready && isHost;
+  const canStart = players.length >= 1 && isHost;
   btnStart.disabled = !canStart;
 
-  if (!ready)        lobbyStatus.textContent = 'Waiting for opponent to join…';
-  else if (!isHost)  lobbyStatus.textContent = 'Waiting for host to start…';
-  else               lobbyStatus.textContent = 'Both players ready — hit Start!';
+  if (!isHost)  lobbyStatus.textContent = 'Waiting for host to start…';
+  else          lobbyStatus.textContent = players.length >= 2 ? 'Ready — hit Start!' : 'Solo mode — bots will fill the arena!';
 }
 
 // ─────────────────────────────────────────────────────────────
