@@ -577,3 +577,16 @@ kbd {
 .re-table td { padding: 5px 14px; text-align: center; border-top: 1px solid var(--border); }
 .re-table tr:first-child td { color: var(--yellow); }
 .re-next { font-size: .72rem; color: var(--muted); letter-spacing: .06em; }
+
+/* Admin link — bottom of main menu */
+.admin-link {
+  display: inline-block;
+  margin-top: 18px;
+  font-size: .72rem;
+  font-family: monospace;
+  letter-spacing: .06em;
+  color: rgba(80,80,160,.45);
+  text-decoration: none;
+  transition: color .2s;
+}
+.admin-link:hover { color: rgba(140,140,255,.75); }

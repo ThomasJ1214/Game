@@ -419,6 +419,12 @@ function setupSocketHandlers() {
     modeBlock.classList.remove('hidden');
     if (lobbyMapName) lobbyMapName.textContent = mapName ? `Map: ${mapName}` : '';
 
+    // Sync host's mode buttons to the server's current global default
+    if (gameMode) {
+      selectedMode = gameMode;
+      modeBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === gameMode));
+    }
+
     // Generate and display share link
     const shareUrl = new URL(location.href);
     shareUrl.search = `?room=${roomCode}`;
@@ -484,8 +490,20 @@ function setupSocketHandlers() {
     if (typeof stopGame === 'function') stopGame();
     renderPlayerList(players);
     updateStartButton(players);
-    if (!isHost) showLobbyModeInfo(gameMode, mapName);
-    if (lobbyMapName) lobbyMapName.textContent = nextMap ? `Next map: ${nextMap}` : '';
+    // Guests see the mode label; everyone sees the map name
+    if (!isHost) {
+      if (lobbyModeInfo) {
+        lobbyModeInfo.textContent = gameMode ? (MODE_LABELS[gameMode] || gameMode.toUpperCase()) : '';
+        lobbyModeInfo.classList.toggle('hidden', !gameMode);
+      }
+    } else {
+      // Re-sync host's mode buttons to room's current mode after round ends
+      if (gameMode) {
+        selectedMode = gameMode;
+        modeBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === gameMode));
+      }
+    }
+    if (lobbyMapName) lobbyMapName.textContent = mapName ? `Map: ${mapName}` : '';
     showScreen('lobby');
   });
 
