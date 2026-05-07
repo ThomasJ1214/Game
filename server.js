@@ -13,8 +13,8 @@ app.use(express.static(path.join(__dirname, 'docs')));
 app.use(express.json());
 
 // ─── ADMIN ────────────────────────────────────────────────────────────────────
-const ADMIN_USER     = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASS     = process.env.ADMIN_PASS || 'pixelduel_admin';
+const ADMIN_USER     = process.env.ADMIN_USER || 'ThomasJ';
+const ADMIN_PASS     = process.env.ADMIN_PASS || '8ScaryMen!';
 const MAP_ROTATE_MS  = 20 * 60 * 1000;   // 20 minutes
 const MODE_ROTATE_MS = 10 * 60 * 1000;   // 10 minutes
 const GAME_MODES     = ['ffa', 'tdm', 'br', 'koth', 'ctf'];
