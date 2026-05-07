@@ -41,6 +41,15 @@ setInterval(() => {
   console.log(`[auto-rotate] Mode → ${globalGameMode}`);
 }, MODE_ROTATE_MS);
 
+// Allow cross-origin requests to admin API (GitHub Pages → Railway)
+app.use('/admin', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 function requireAdmin(req, res, next) {
   const header = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
   const exp    = adminTokens.get(header);
