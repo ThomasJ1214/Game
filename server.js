@@ -1762,6 +1762,7 @@ io.on('connection', socket => {
       gameMode: globalGameMode, roundDuration: ROUND_DURATION_MS,
       _roundEnded: false,
     };
+    const room = rooms[code];
     socketRoom[socket.id] = code;
     socket.join(code);
     socket.emit('lobby_created', { roomCode:code, playerIndex:0, players:[{name:pName,index:0}],
