@@ -477,6 +477,8 @@ function generateAsteroids(mapIndex) {
 }
 
 // ─── IN-MEMORY STATE ──────────────────────────────────────────────────────────
+let ASTEROIDS = [];   // set to room.asteroids at the start of each game tick
+
 const rooms      = {};
 const socketRoom = {};
 let   nextBulletId = 1;
@@ -1621,6 +1623,7 @@ function startLoop(room) {
   room.gameLoopInterval = setInterval(() => {
     const state = room.gameState;
     if (!state) return;
+    ASTEROIDS = room.asteroids || [];
     state.tick++;
     const now = Date.now();
 
