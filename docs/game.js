@@ -672,31 +672,42 @@ const NEBULAS = [
   { x: 620, y: 120, r: 170, r2: 0.58, g: 0, b: 90 },
 ];
 
+// Theme tints per map theme
+const THEME_BG = {
+  default: { bg: '#07071a', nebs: [[0,0,140],[0,0,110],[0,60,80],[80,0,0],[0,0,130]], star: '#ffffff' },
+  orange:  { bg: '#120a04', nebs: [[140,60,0],[110,40,0],[130,70,20],[80,30,0],[100,50,0]], star: '#ffe8c0' },
+  purple:  { bg: '#0a0514', nebs: [[80,0,140],[60,0,120],[90,20,100],[70,0,130],[50,0,110]], star: '#e0c0ff' },
+  green:   { bg: '#04120a', nebs: [[0,120,30],[0,100,20],[20,110,40],[0,90,10],[10,130,20]], star: '#c0ffe0' },
+  red:     { bg: '#120406', nebs: [[140,0,20],[120,0,10],[110,20,30],[130,10,0],[100,0,20]], star: '#ffc0c0' },
+};
+
 function drawBackground(now) {
-  ctx.fillStyle = '#07071a';
+  const theme = THEME_BG[_mapTheme] || THEME_BG.default;
+  ctx.fillStyle = theme.bg;
   ctx.fillRect(0, 0, ARENA_W, ARENA_H);
 
-  // Nebula clouds
-  for (const n of NEBULAS) {
-    const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
-    g.addColorStop(0,    `rgba(${n.r2 < 0.52 ? 0 : n.g},${n.g},${n.b},0.11)`);
-    g.addColorStop(0.5,  `rgba(0,${n.g},${n.b},0.05)`);
-    g.addColorStop(1,    'rgba(0,0,0,0)');
-    ctx.fillStyle = g;
+  // Theme-tinted nebula clouds
+  for (let i = 0; i < NEBULAS.length; i++) {
+    const n = NEBULAS[i];
+    const [r, g, b] = theme.nebs[i % theme.nebs.length];
+    const neb = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
+    neb.addColorStop(0,   `rgba(${r},${g},${b},0.11)`);
+    neb.addColorStop(0.5, `rgba(${r},${g},${b},0.05)`);
+    neb.addColorStop(1,   'rgba(0,0,0,0)');
+    ctx.fillStyle = neb;
     ctx.fillRect(0, 0, ARENA_W, ARENA_H);
   }
 
-  // Stars
+  // Stars — tinted by theme
   for (const s of stars) {
     const a = s.alpha * (0.6 + 0.4 * Math.sin(now * s.speed * 0.001 + s.phase));
     ctx.globalAlpha = a;
-    ctx.fillStyle   = '#ffffff';
+    ctx.fillStyle   = theme.star;
     ctx.beginPath();
     ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
-
 }
 
 function drawWorldDecorations() {
@@ -851,28 +862,65 @@ function drawBRZone(state) {
 
 function drawKOTHZone(state, now) {
   if (!state.kothZone) return;
-  const z     = state.kothZone;
-  const pulse = 0.5 + 0.3 * Math.sin(now * 0.003);
+  const z      = state.kothZone;
+  const pulse  = 0.5 + 0.3 * Math.sin(now * 0.003);
+  const scores = z.scores || {};
+  // Find leading scorer and their progress fraction
+  let leadScore = 0, leadCol = '#ffcc00';
+  for (const [key, val] of Object.entries(scores)) {
+    if (val > leadScore) {
+      leadScore = val;
+      const idx = key.startsWith('t') ? parseInt(key.slice(1)) : -1;
+      leadCol = idx >= 0 ? (idx === 0 ? '#00eeff' : '#ff44aa') : '#ffcc00';
+    }
+  }
+  const KOTH_WIN = window.KOTH_WIN_SCORE || 120;
+  const frac = Math.min(1, leadScore / KOTH_WIN);
+  const zoneCol = leadScore > 0 ? leadCol : '#ffcc00';
+
   ctx.save();
-  // Glowing capture circle
+  // Outer ring — tinted by leader
   ctx.globalAlpha = 0.55 + pulse * 0.25;
-  ctx.strokeStyle = '#ffcc00';
-  ctx.shadowColor = '#ffcc00';
+  ctx.strokeStyle = zoneCol;
+  ctx.shadowColor = zoneCol;
   ctx.shadowBlur  = 22;
   ctx.lineWidth   = 2.5;
   ctx.beginPath();
   ctx.arc(z.x, z.y, z.r, 0, Math.PI * 2);
   ctx.stroke();
-  // Translucent fill
+  // Fill
   ctx.globalAlpha = 0.04 + pulse * 0.04;
-  ctx.fillStyle   = '#ffcc00';
+  ctx.fillStyle   = zoneCol;
   ctx.fill();
   ctx.globalAlpha = 1;
   ctx.shadowBlur  = 12;
-  ctx.fillStyle   = 'rgba(255,204,0,0.55)';
+  // Progress arc (clockwise from top)
+  if (frac > 0) {
+    ctx.strokeStyle = zoneCol;
+    ctx.shadowColor = zoneCol;
+    ctx.shadowBlur  = 18;
+    ctx.lineWidth   = 5;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    ctx.arc(z.x, z.y, z.r - 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur  = 0;
+  }
+  // Star icon
+  ctx.fillStyle   = `rgba(255,204,0,0.55)`;
   ctx.font        = 'bold 32px monospace';
   ctx.textAlign   = 'center';
   ctx.fillText('★', z.x, z.y + 11);
+  // Score label inside zone
+  if (leadScore > 0) {
+    ctx.font      = 'bold 12px monospace';
+    ctx.fillStyle = zoneCol;
+    ctx.shadowColor = zoneCol;
+    ctx.shadowBlur  = 8;
+    ctx.fillText(`${leadScore}/${KOTH_WIN}s`, z.x, z.y + 30);
+    ctx.shadowBlur = 0;
+  }
   ctx.restore();
 }
 
@@ -1589,6 +1637,29 @@ function drawHUD(state, now) {
     ctx.shadowBlur  = 6;
     ctx.fillText(`${modeStr}  ·  ${_mapName}`, ARENA_W / 2, labelY);
     ctx.shadowBlur  = 0;
+
+    // BR zone progress bar — shown below mode label
+    if (_gameMode === 'br' && state.brZone) {
+      const z = state.brZone;
+      const zonePct = Math.max(0, Math.min(1, (z.r - (z.minR || 350)) / (5400 - (z.minR || 350))));
+      const barW = 160, barH = 6;
+      const bx = ARENA_W / 2 - barW / 2;
+      const by = labelY + 10;
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(bx, by, barW, barH);
+      const zoneGrad = ctx.createLinearGradient(bx, 0, bx + barW, 0);
+      zoneGrad.addColorStop(0, '#ff2200');
+      zoneGrad.addColorStop(1, '#ff8800');
+      ctx.fillStyle   = zoneGrad;
+      ctx.shadowColor = '#ff4400';
+      ctx.shadowBlur  = 6;
+      ctx.fillRect(bx, by, barW * zonePct, barH);
+      ctx.shadowBlur = 0;
+      ctx.font      = '9px monospace';
+      ctx.fillStyle = '#ff8866';
+      ctx.fillText(`ZONE ${Math.round(zonePct * 100)}%`, ARENA_W / 2, by + barH + 11);
+    }
+
     ctx.restore();
   }
 
@@ -1958,6 +2029,57 @@ function drawMinimap(state) {
   ctx.strokeStyle = 'rgba(255,255,255,0.10)';
   ctx.lineWidth   = 0.8;
   ctx.strokeRect(MX + cameraX * sx, MY + cameraY * sy, ARENA_W * sx, ARENA_H * sy);
+
+  // BR zone circle
+  if (state.brZone) {
+    const z = state.brZone;
+    ctx.strokeStyle = 'rgba(255,50,0,0.6)';
+    ctx.lineWidth   = 1.5;
+    ctx.beginPath();
+    ctx.arc(MX + z.x * sx, MY + z.y * sy, z.r * sx, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // KOTH zone circle
+  if (state.kothZone) {
+    const z = state.kothZone;
+    ctx.strokeStyle = 'rgba(255,204,0,0.55)';
+    ctx.lineWidth   = 1.5;
+    ctx.beginPath();
+    ctx.arc(MX + z.x * sx, MY + z.y * sy, z.r * sx, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // CTF: base markers + flag positions
+  if (state.ctfFlags) {
+    const CTF_BASES = [{ x: 900, y: 3600 }, { x: 8700, y: 3600 }];
+    const TEAM_COLS_MAP = [TEAM_COLORS[0], TEAM_COLORS[1]];
+    // Base diamonds
+    for (let t = 0; t < 2; t++) {
+      const bx = MX + CTF_BASES[t].x * sx, by = MY + CTF_BASES[t].y * sy;
+      ctx.strokeStyle = TEAM_COLS_MAP[t];
+      ctx.lineWidth   = 1;
+      ctx.beginPath();
+      ctx.moveTo(bx,     by - 5);
+      ctx.lineTo(bx + 4, by);
+      ctx.lineTo(bx,     by + 5);
+      ctx.lineTo(bx - 4, by);
+      ctx.closePath();
+      ctx.stroke();
+    }
+    // Flag dots (bright if away from base)
+    for (const flag of state.ctfFlags) {
+      const col = flag.carrier !== null ? '#ffff00' : TEAM_COLS_MAP[flag.team];
+      const fx = MX + flag.x * sx, fy = MY + flag.y * sy;
+      ctx.fillStyle   = col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur  = flag.carrier !== null ? 8 : 0;
+      ctx.beginPath();
+      ctx.arc(fx, fy, flag.carrier !== null ? 3.5 : 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+  }
 
   // XP blocks
   if (state.xpBlocks) {

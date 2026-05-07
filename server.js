@@ -457,6 +457,19 @@ const MAPS = [
   },
 ];
 
+// Per-mode preferred map indices — maps chosen for game mode fit
+const MAP_FOR_MODE = {
+  ffa:  [0, 1, 2],   // Open Field, Asteroid Belt, Void
+  tdm:  [4, 0, 3],   // Core Siege, Open Field, Labyrinth
+  br:   [0, 2, 1],   // Open Field, Void, Asteroid Belt (wide open)
+  koth: [4, 0],      // Core Siege, Open Field (centered zone)
+  ctf:  [3, 0],      // Labyrinth, Open Field (corridors help CTF)
+};
+function pickMapForMode(gameMode) {
+  const cands = MAP_FOR_MODE[gameMode] || [0, 1, 2, 3, 4];
+  return cands[Math.floor(Math.random() * cands.length)];
+}
+
 function generateAsteroids(mapIndex) {
   const map = MAPS[mapIndex % MAPS.length];
   let s = 31415 + mapIndex * 99991;
@@ -929,50 +942,74 @@ function beamSolutionComp(bot, target) {
 function avoidHazards(bot, aimX, aimY, wallMult, astMult) {
   const projX = bot.x + bot.vx * 35, projY = bot.y + bot.vy * 35;
   const wm    = BOT_WALL_MARGIN * wallMult;
-  if (projX < wm)            aimX += (wm - projX)            * 5;
-  if (projX > WORLD_W - wm)  aimX -= (wm - (WORLD_W - projX)) * 5;
-  if (projY < wm)            aimY += (wm - projY)            * 5;
-  if (projY > WORLD_H - wm)  aimY -= (wm - (WORLD_H - projY)) * 5;
+  if (projX < wm)           aimX += (wm - projX)             * 5;
+  if (projX > WORLD_W - wm) aimX -= (wm - (WORLD_W - projX)) * 5;
+  if (projY < wm)           aimY += (wm - projY)             * 5;
+  if (projY > WORLD_H - wm) aimY -= (wm - (WORLD_H - projY)) * 5;
+
+  const pdx = aimX - bot.x, pdy = aimY - bot.y;
+  const plen = Math.hypot(pdx, pdy) || 1;
+  const pux = pdx / plen, puy = pdy / plen;
+
   for (const ast of ASTEROIDS) {
     const adx = ast.x - bot.x, ady = ast.y - bot.y;
     const adist = Math.hypot(adx, ady);
     const clear = ast.r + SHIP_RADIUS + BOT_AST_MARGIN * astMult;
-    if (adist < clear && adist > 0) {
-      const perpX = -ady / adist, perpY = adx / adist;
-      const sign  = (bot.vx * perpX + bot.vy * perpY) >= 0 ? 1 : -1;
-      aimX += perpX * (clear - adist) * 6 * sign;
-      aimY += perpY * (clear - adist) * 6 * sign;
+    // Direct repulsion when already inside clearance
+    if (adist < clear * 0.9 && adist > 0) {
+      aimX -= (adx / adist) * (clear - adist) * 12;
+      aimY -= (ady / adist) * (clear - adist) * 12;
+      continue;
     }
+    // Only push when asteroid is in the forward path
+    const along = adx * pux + ady * puy;
+    if (along < 0 || along > plen + clear) continue;
+    const perpD = Math.abs(adx * puy - ady * pux);
+    if (perpD >= clear) continue;
+    // Cross product determines which side to pass
+    const cross = pdx * ady - pdy * adx;
+    const side  = cross >= 0 ? -1 : 1;
+    aimX += puy * side * (clear - perpD) * 6 * astMult;
+    aimY -= pux * side * (clear - perpD) * 6 * astMult;
   }
   return [aimX, aimY];
 }
 
-// Enhanced avoidance for beast AI: looks 50 ticks ahead, checks trajectory intersection
+// Enhanced avoidance for beast AI: path-relative steering around obstacles
 function avoidHazardsBeast(bot, aimX, aimY) {
   const projX = bot.x + bot.vx * 50, projY = bot.y + bot.vy * 50;
   const wm = BOT_WALL_MARGIN * 1.9;
-  if (projX < wm)            aimX += (wm - projX)             * 7;
-  if (projX > WORLD_W - wm)  aimX -= (wm - (WORLD_W - projX)) * 7;
-  if (projY < wm)            aimY += (wm - projY)             * 7;
-  if (projY > WORLD_H - wm)  aimY -= (wm - (WORLD_H - projY)) * 7;
-  // Clamp aim to world
+  if (projX < wm)           aimX += (wm - projX)             * 7;
+  if (projX > WORLD_W - wm) aimX -= (wm - (WORLD_W - projX)) * 7;
+  if (projY < wm)           aimY += (wm - projY)             * 7;
+  if (projY > WORLD_H - wm) aimY -= (wm - (WORLD_H - projY)) * 7;
   aimX = Math.max(BOT_WALL_MARGIN, Math.min(WORLD_W - BOT_WALL_MARGIN, aimX));
   aimY = Math.max(BOT_WALL_MARGIN, Math.min(WORLD_H - BOT_WALL_MARGIN, aimY));
+
+  const pdx = aimX - bot.x, pdy = aimY - bot.y;
+  const plen = Math.hypot(pdx, pdy) || 1;
+  const pux = pdx / plen, puy = pdy / plen;
+  const clearMult = 1.8;
+
   for (const ast of ASTEROIDS) {
     const adx = ast.x - bot.x, ady = ast.y - bot.y;
     const adist = Math.hypot(adx, ady);
-    const clear = ast.r + SHIP_RADIUS + BOT_AST_MARGIN * 1.8;
-    if (adist < clear * 1.5 && adist > 0) {
-      // Only push if moving toward asteroid
-      const velDot = (bot.vx * adx + bot.vy * ady) / (adist || 1);
-      const str = (clear - adist) * 9;
-      const perpX = -ady / adist, perpY = adx / adist;
-      const sign  = (bot.vx * perpX + bot.vy * perpY) >= 0 ? 1 : -1;
-      if (adist < clear || velDot > 0) {
-        aimX += perpX * str * sign;
-        aimY += perpY * str * sign;
-      }
+    const clear = (ast.r + SHIP_RADIUS + BOT_AST_MARGIN) * clearMult;
+    // Direct repulsion when inside clearance
+    if (adist < clear * 0.9 && adist > 0) {
+      aimX -= (adx / adist) * (clear - adist) * 18;
+      aimY -= (ady / adist) * (clear - adist) * 18;
+      continue;
     }
+    // Only push when asteroid is in the forward path
+    const along = adx * pux + ady * puy;
+    if (along < 0 || along > plen + clear) continue;
+    const perpD = Math.abs(adx * puy - ady * pux);
+    if (perpD >= clear) continue;
+    const cross = pdx * ady - pdy * adx;
+    const side  = cross >= 0 ? -1 : 1;
+    aimX += puy * side * (clear - perpD) * 9 * clearMult;
+    aimY -= pux * side * (clear - perpD) * 9 * clearMult;
   }
   return [aimX, aimY];
 }
@@ -1008,7 +1045,7 @@ function getBotModeGoal(bot, state, gameMode) {
     const ownFlag = flags.find(f => f.team === myTeam);
     if (ownFlag && ownFlag.carrier !== null) {
       const carrier = state.ships[ownFlag.carrier];
-      if (carrier && carrier.alive) return { x: carrier.x, y: carrier.y, priority: 'high' };
+      if (carrier && carrier.alive) return { x: carrier.x, y: carrier.y, priority: 'high', ship: carrier };
     }
     const enemyFlag = flags.find(f => f.team !== myTeam && f.carrier === null);
     if (enemyFlag) return { x: enemyFlag.x, y: enemyFlag.y, priority: 'medium' };
@@ -1245,8 +1282,16 @@ function botThinkBeast(bot, state, now, gameMode) {
         low:      bState === 'wander',
       };
       if (overrides[modeGoal.priority]) {
-        bState = 'wander';
-        aimX = modeGoal.x; aimY = modeGoal.y;
+        if (modeGoal.ship) {
+          // Chase & shoot a specific ship (e.g. enemy flag carrier)
+          bState = 'hunt';
+          target = modeGoal.ship;
+          const [lx, ly] = beamSolutionComp(bot, modeGoal.ship);
+          aimX = lx; aimY = ly;
+        } else {
+          bState = 'wander';
+          aimX = modeGoal.x; aimY = modeGoal.y;
+        }
         if (!bot._wanderPt) bot._wanderPt = { x: aimX, y: aimY };
         bot._wanderPt.x = aimX; bot._wanderPt.y = aimY;
       }
@@ -1450,10 +1495,17 @@ function botThink(bot, state, now, difficulty, gameMode) {
         (modeGoal.priority === 'medium' && (curState === 'wander' || !nearEnemy)) ||
         (modeGoal.priority === 'low'    && curState === 'wander');
       if (shouldOverride) {
-        if (!bot._wanderPt) bot._wanderPt = { x: 0, y: 0 };
-        bot._wanderPt.x = modeGoal.x; bot._wanderPt.y = modeGoal.y;
-        bot._botState   = 'wander';
-        bot._botTarget  = { type: 'wander', obj: bot._wanderPt };
+        if (modeGoal.ship) {
+          // Treat as hunt — bot will close in and fire at the carrier
+          nearEnemy      = modeGoal.ship;
+          bot._botState  = 'hunt';
+          bot._botTarget = { type: 'ship', obj: modeGoal.ship };
+        } else {
+          if (!bot._wanderPt) bot._wanderPt = { x: 0, y: 0 };
+          bot._wanderPt.x = modeGoal.x; bot._wanderPt.y = modeGoal.y;
+          bot._botState   = 'wander';
+          bot._botTarget  = { type: 'wander', obj: bot._wanderPt };
+        }
       }
     }
   }
@@ -1699,8 +1751,9 @@ function endRound(room, state, now, reason, forcedWinner) {
     room.inputs       = Array.from({ length: MAX_PLAYERS }, emptyInput);
 
     if (room.isAlwaysOpen) {
-      // Cycle game mode too, refresh asteroids
+      // Cycle game mode and pick a map suited to the new mode
       room.gameMode  = GAME_MODES[(GAME_MODES.indexOf(room.gameMode) + 1) % GAME_MODES.length];
+      room.mapIndex  = pickMapForMode(room.gameMode);
       room.asteroids = generateAsteroids(room.mapIndex);
       if (room.players.length > 0) {
         // Players still here — auto-start next round after a brief pause
@@ -1827,8 +1880,8 @@ function cleanup(socket) {
         room.gameStarted  = false;
         room.gameState    = null;
         room._roundEnded  = false;
-        room.mapIndex     = (room.mapIndex + 1) % MAPS.length;
         room.gameMode     = GAME_MODES[(GAME_MODES.indexOf(room.gameMode) + 1) % GAME_MODES.length];
+        room.mapIndex     = pickMapForMode(room.gameMode);
         room.asteroids    = generateAsteroids(room.mapIndex);
         room.inputs       = Array.from({ length: MAX_PLAYERS }, emptyInput);
         broadcastPublicRooms();
