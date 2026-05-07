@@ -23,6 +23,21 @@ function colorRgba(index) {
   return (a) => `rgba(${r},${g},${b},${a})`;
 }
 
+const TEAM_COLORS = ['#00eeff', '#ff44aa'];
+
+function getShipColor(ship) {
+  if ((_gameMode === 'tdm' || _gameMode === 'ctf') && ship.team !== undefined) {
+    return TEAM_COLORS[ship.team % 2] || COLORS[ship.index % COLORS.length];
+  }
+  return COLORS[ship.index % COLORS.length];
+}
+
+function getShipRgba(ship) {
+  const h = getShipColor(ship);
+  const r = parseInt(h.slice(1,3),16), g = parseInt(h.slice(3,5),16), b = parseInt(h.slice(5,7),16);
+  return (a) => `rgba(${r},${g},${b},${a})`;
+}
+
 // ─────────────────────────────────────────────────────────────
 // MODULE STATE
 // ─────────────────────────────────────────────────────────────
@@ -48,8 +63,15 @@ let _difficulty     = 'medium';
 let _upgradeOpen    = false;
 let _selectedTarget = -1;
 let _isThomas       = false;
-let shipTrails      = {};   // index → [{x,y,spd}] circular history
-let hackFlashes     = [];  // { x,y,r,maxR,life,col }
+let shipTrails      = {};
+let hackFlashes     = [];
+// Game mode / round state
+let _gameMode       = 'ffa';
+let _mapName        = '';
+let _mapTheme       = 'default';
+let _roundDuration  = 0;
+let _roundStartAt   = 0;
+let _roundEndShown  = false;
 
 const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
 
@@ -57,10 +79,16 @@ const keys = { w: false, a: false, s: false, d: false, space: false, shift: fals
 // PUBLIC API  (called by lobby.js)
 // ─────────────────────────────────────────────────────────────
 
-function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
+function initGame(sock, initialState, yourIndex, asteroids, difficulty, opts) {
   _socket         = sock;
   _myIndex        = yourIndex;
   _difficulty     = difficulty || 'medium';
+  _gameMode       = (opts && opts.gameMode)      || 'ffa';
+  _mapName        = (opts && opts.mapName)       || '';
+  _mapTheme       = (opts && opts.mapTheme)      || 'default';
+  _roundDuration  = (opts && opts.roundDuration) || 0;
+  _roundStartAt   = (opts && opts.roundStartAt)  || 0;
+  _roundEndShown  = false;
   serverState     = initialState;
   prevState       = null;
   explosions      = [];
@@ -96,13 +124,19 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
   canvas = document.getElementById('canvas');
   ctx    = canvas.getContext('2d');
 
-  // Full-screen canvas — match window dimensions
-  ARENA_W = canvas.width  = window.innerWidth;
-  ARENA_H = canvas.height = window.innerHeight;
-  window.onresize = () => {
-    ARENA_W = canvas.width  = window.innerWidth;
-    ARENA_H = canvas.height = window.innerHeight;
-  };
+  // Full-screen HiDPI canvas — scale backing buffer by devicePixelRatio
+  function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    ARENA_W = window.innerWidth;
+    ARENA_H = window.innerHeight;
+    canvas.width  = ARENA_W * dpr;
+    canvas.height = ARENA_H * dpr;
+    canvas.style.width  = ARENA_W + 'px';
+    canvas.style.height = ARENA_H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resizeCanvas();
+  window.onresize = resizeCanvas;
 
   // Three-layer star field: distant dim, mid, bright
   stars = Array.from({ length: 160 }, () => ({
@@ -142,6 +176,28 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty) {
     } else if (type === 'emp') {
       shakeAmount = Math.max(shakeAmount, 7);
     }
+  });
+
+  _socket.off('round_end');
+  _socket.on('round_end', ({ reason, winner, scoreboard, nextMap }) => {
+    _roundEndShown = true;
+    const reTitle  = document.getElementById('re-title');
+    const reWinner = document.getElementById('re-winner');
+    const reTbody  = document.getElementById('re-tbody');
+    const reNext   = document.getElementById('re-next');
+    const overlay  = document.getElementById('round-end-overlay');
+    if (reTitle)  reTitle.textContent  = reason === 'time' ? 'TIME UP!' : 'ROUND OVER';
+    if (reWinner) reWinner.textContent = winner ? `${winner} wins!` : 'Draw!';
+    if (reTbody) {
+      reTbody.innerHTML = '';
+      for (const row of (scoreboard || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${row.name}</td><td>${row.kills}</td><td>${row.deaths}</td>`;
+        reTbody.appendChild(tr);
+      }
+    }
+    if (reNext)   reNext.textContent   = nextMap ? `Next map: ${nextMap}` : '';
+    if (overlay)  overlay.classList.add('visible');
   });
 
   window.onkeydown = e => {
@@ -259,6 +315,9 @@ function stopGame() {
   window.onkeyup   = null;
   window.onblur    = null;
   if (helpTimer) { clearTimeout(helpTimer); helpTimer = null; }
+  const overlay = document.getElementById('round-end-overlay');
+  if (overlay) overlay.classList.remove('visible');
+  _roundEndShown = false;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -373,7 +432,7 @@ function drawShipTrails(state) {
   for (const ship of state.ships) {
     const trail = shipTrails[ship.index];
     if (!trail || trail.length < 2) continue;
-    const col = COLORS[ship.index % COLORS.length];
+    const col = getShipColor(ship);
     const r = parseInt(col.slice(1,3),16), g = parseInt(col.slice(3,5),16), b2 = parseInt(col.slice(5,7),16);
     const n = trail.length;
     for (let i = 1; i < n; i++) {
@@ -681,6 +740,100 @@ function drawWorldBorder() {
   ctx.restore();
 }
 
+// ─────────────────────────────────────────────────────────────
+// DRAW: MODE-SPECIFIC WORLD OBJECTS
+// ─────────────────────────────────────────────────────────────
+
+function drawBRZone(state) {
+  if (!state.brZone) return;
+  const z = state.brZone;
+  ctx.save();
+  // Solid danger-zone border
+  ctx.strokeStyle = '#ff2200';
+  ctx.shadowColor = '#ff2200';
+  ctx.shadowBlur  = 24;
+  ctx.lineWidth   = 3.5;
+  ctx.beginPath();
+  ctx.arc(z.x, z.y, z.r, 0, Math.PI * 2);
+  ctx.stroke();
+  // Subtle red fill inside so players can see safe zone boundary
+  ctx.globalAlpha = 0.05;
+  ctx.fillStyle   = '#ff2200';
+  ctx.fill();
+  // Dashed inner ring
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 0;
+  ctx.setLineDash([18, 12]);
+  ctx.strokeStyle = 'rgba(255,100,0,0.35)';
+  ctx.lineWidth   = 1.5;
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawKOTHZone(state, now) {
+  if (!state.kothZone) return;
+  const z     = state.kothZone;
+  const pulse = 0.5 + 0.3 * Math.sin(now * 0.003);
+  ctx.save();
+  // Glowing capture circle
+  ctx.globalAlpha = 0.55 + pulse * 0.25;
+  ctx.strokeStyle = '#ffcc00';
+  ctx.shadowColor = '#ffcc00';
+  ctx.shadowBlur  = 22;
+  ctx.lineWidth   = 2.5;
+  ctx.beginPath();
+  ctx.arc(z.x, z.y, z.r, 0, Math.PI * 2);
+  ctx.stroke();
+  // Translucent fill
+  ctx.globalAlpha = 0.04 + pulse * 0.04;
+  ctx.fillStyle   = '#ffcc00';
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 12;
+  ctx.fillStyle   = 'rgba(255,204,0,0.55)';
+  ctx.font        = 'bold 32px monospace';
+  ctx.textAlign   = 'center';
+  ctx.fillText('★', z.x, z.y + 11);
+  ctx.restore();
+}
+
+function drawCTFFlags(state) {
+  if (!state.ctfFlags) return;
+  const teamCols = [TEAM_COLORS[0], TEAM_COLORS[1]];
+  for (const flag of state.ctfFlags) {
+    const col = teamCols[flag.team];
+    const x   = flag.x;
+    const y   = flag.y;
+    ctx.save();
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = 16;
+    // Pole
+    ctx.strokeStyle = col;
+    ctx.lineWidth   = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(x, y + 18);
+    ctx.lineTo(x, y - 18);
+    ctx.stroke();
+    // Flag banner
+    ctx.fillStyle = flag.atBase ? col : '#ffff00';
+    ctx.shadowColor = flag.atBase ? col : '#ffff00';
+    ctx.beginPath();
+    ctx.moveTo(x,      y - 18);
+    ctx.lineTo(x + 16, y - 10);
+    ctx.lineTo(x,      y - 2);
+    ctx.closePath();
+    ctx.fill();
+    // Label
+    ctx.shadowBlur  = 0;
+    ctx.font        = 'bold 10px monospace';
+    ctx.fillStyle   = flag.atBase ? col : '#ffff00';
+    ctx.textAlign   = 'center';
+    ctx.fillText(flag.atBase ? 'FLAG' : 'TAKEN!', x, y + 32);
+    ctx.restore();
+  }
+}
+
 function render(state, now) {
   ctx.save();
 
@@ -713,6 +866,9 @@ function render(state, now) {
   drawWorldBorder();
   drawWorldDecorations();
   for (const ast of mapAsteroids) drawAsteroid(ast);
+  drawBRZone(state);
+  drawKOTHZone(state, now);
+  drawCTFFlags(state);
   if (state.xpBlocks) for (const blk of state.xpBlocks) drawXpBlock(blk);
   updateDrawShockwaves();
   updateDrawExplosions();
@@ -1083,8 +1239,8 @@ function _drawBranchExtras(branch, tier, col, now, shipIdx) {
 }
 
 function drawShip(ship, now) {
-  const col    = COLORS[ship.index % COLORS.length];
-  const rgba   = colorRgba(ship.index);
+  const col  = getShipColor(ship);
+  const rgba = getShipRgba(ship);
   const isMe   = ship.index === _myIndex;
   const branch = window.getShipBranch ? window.getShipBranch(ship.upgradePath) : null;
   const tier   = ship.tier || 0;
@@ -1290,6 +1446,32 @@ function drawHUD(state, now) {
     }
   }
 
+  // Round timer + mode label — top centre
+  if (_roundDuration > 0 && _roundStartAt > 0 && !_roundEndShown) {
+    const elapsed   = Date.now() - _roundStartAt;
+    const remaining = Math.max(0, _roundDuration * 1000 - elapsed);
+    const mins      = Math.floor(remaining / 60000);
+    const secs      = Math.floor((remaining % 60000) / 1000);
+    const timeStr   = `${mins}:${secs.toString().padStart(2, '0')}`;
+    const urgent    = remaining < 30000 && remaining > 0;
+    const pulse     = urgent ? (0.7 + 0.3 * Math.sin(Date.now() * 0.01)) : 1;
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.textAlign   = 'center';
+    ctx.font        = 'bold 20px monospace';
+    ctx.fillStyle   = urgent ? '#ff4444' : '#ffffff';
+    ctx.shadowColor = urgent ? '#ff2222' : '#aaaaff';
+    ctx.shadowBlur  = urgent ? 16 : 7;
+    ctx.fillText(timeStr, ARENA_W / 2, 32);
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur  = 0;
+    ctx.font        = '10px monospace';
+    ctx.fillStyle   = '#555577';
+    const modeLabelMap = { ffa: 'FFA', tdm: 'TDM', br: 'BATTLE ROYALE', koth: 'KING OF THE HILL', ctf: 'CTF' };
+    ctx.fillText(`${modeLabelMap[_gameMode] || _gameMode.toUpperCase()}  ·  ${_mapName}`, ARENA_W / 2, 46);
+    ctx.restore();
+  }
+
   // Upgrade available banner (top centre, pulsing)
   if (myShip && myShip.pendingUpgrade && !_upgradeOpen) {
     const pulse = 0.65 + 0.35 * Math.sin(Date.now() * 0.005);
@@ -1308,21 +1490,33 @@ function drawHUD(state, now) {
   // Upgrade panel (only when [U] was pressed)
   drawUpgradePanel(state);
 
-  // Respawn countdown overlay
-  if (myShip && !myShip.alive && myShip.respawnAt > 0) {
-    const remaining = Math.max(0, (myShip.respawnAt - Date.now()) / 1000);
+  // Respawn countdown / eliminated overlay
+  if (myShip && !myShip.alive) {
     ctx.save();
-    ctx.textAlign   = 'center';
-    ctx.font        = 'bold 32px monospace';
-    ctx.fillStyle   = 'rgba(255,80,80,0.92)';
-    ctx.shadowColor = '#ff2222';
-    ctx.shadowBlur  = 24;
-    ctx.fillText('DESTROYED', ARENA_W / 2, ARENA_H / 2 - 18);
-    ctx.font        = 'bold 18px monospace';
-    ctx.fillStyle   = '#ffffff';
-    ctx.shadowColor = '#ffffff';
-    ctx.shadowBlur  = 10;
-    ctx.fillText(`Respawning in ${remaining.toFixed(1)}s`, ARENA_W / 2, ARENA_H / 2 + 16);
+    ctx.textAlign = 'center';
+    if (myShip.respawnAt > 0) {
+      const remaining = Math.max(0, (myShip.respawnAt - Date.now()) / 1000);
+      ctx.font        = 'bold 32px monospace';
+      ctx.fillStyle   = 'rgba(255,80,80,0.92)';
+      ctx.shadowColor = '#ff2222';
+      ctx.shadowBlur  = 24;
+      ctx.fillText('DESTROYED', ARENA_W / 2, ARENA_H / 2 - 18);
+      ctx.font        = 'bold 18px monospace';
+      ctx.fillStyle   = '#ffffff';
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur  = 10;
+      ctx.fillText(`Respawning in ${remaining.toFixed(1)}s`, ARENA_W / 2, ARENA_H / 2 + 16);
+    } else if (_gameMode === 'br') {
+      ctx.font        = 'bold 36px monospace';
+      ctx.fillStyle   = 'rgba(255,60,60,0.95)';
+      ctx.shadowColor = '#ff2200';
+      ctx.shadowBlur  = 28;
+      ctx.fillText('ELIMINATED', ARENA_W / 2, ARENA_H / 2 - 22);
+      ctx.font        = '16px monospace';
+      ctx.fillStyle   = '#888899';
+      ctx.shadowBlur  = 0;
+      ctx.fillText('Battle Royale  ·  spectating', ARENA_W / 2, ARENA_H / 2 + 16);
+    }
     ctx.restore();
   }
 
@@ -1655,7 +1849,7 @@ function drawMinimap(state) {
   // Ships
   for (const ship of state.ships) {
     if (!ship.alive) continue;
-    const col    = COLORS[ship.index % COLORS.length];
+    const col    = getShipColor(ship);
     const isMe   = ship.index === _myIndex;
     const isLock = _isThomas && ship.index === _selectedTarget;
     ctx.fillStyle   = col;

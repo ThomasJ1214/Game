@@ -291,7 +291,7 @@
     dmgReduce:  0,   // 0–0.60: fraction of incoming bullet damage absorbed
   };
 
-  root.XP_PER_TIER = 150;   // flat XP cost per tier
+  root.XP_PER_TIER = 300;   // flat XP cost per tier (doubled — slower progression per life)
 
   root.computeShipStats = function (upgradePath) {
     const s = Object.assign({}, root.BASE_STATS);

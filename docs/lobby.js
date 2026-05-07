@@ -63,6 +63,8 @@ let mode               = 'create';    // 'create' | 'join'
 let responseTimer      = null;
 let selectedDifficulty = 'medium';
 let selectedVisibility = 'private';   // 'private' | 'public'
+let selectedMode       = 'ffa';
+let selectedDuration   = 300;         // seconds (0 = unlimited)
 
 // Auto-join from URL param: ?room=XXXX
 (function () {
@@ -88,6 +90,36 @@ visButtons.forEach(btn => {
   btn.addEventListener('click', () => {
     selectedVisibility = btn.dataset.vis;
     visButtons.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// ── Mode + Duration wiring ─────────────────────────────────────
+const modeBlock    = $('mode-block');
+const lobbyModeInfo = $('lobby-mode-info');
+const lobbyMapName  = $('lobby-map-name');
+const modeBtns     = Array.from(document.querySelectorAll('.mode-btn'));
+const durBtns      = Array.from(document.querySelectorAll('.dur-btn'));
+
+const MODE_LABELS = {
+  ffa: '⚔ Free For All — most kills wins',
+  tdm: '🛡 Team Deathmatch — 2 teams, most kills',
+  br:  '🌀 Battle Royale — shrinking zone, no respawn',
+  koth:'⭐ King of the Hill — hold the center zone',
+  ctf: '🚩 Capture the Flag — 3 captures wins',
+};
+
+modeBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    selectedMode = btn.dataset.mode;
+    modeBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+durBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    selectedDuration = Number(btn.dataset.dur);
+    durBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
   });
 });
@@ -340,7 +372,11 @@ roomCodeEl.addEventListener('click', () => {
 });
 
 btnStart.addEventListener('click', () => {
-  if (!btnStart.disabled) socket.emit('start_game', { difficulty: selectedDifficulty });
+  if (!btnStart.disabled) socket.emit('start_game', {
+    difficulty:    selectedDifficulty,
+    gameMode:      selectedMode,
+    roundDuration: selectedDuration,
+  });
 });
 
 btnLobbyBack.addEventListener('click', () => {
@@ -369,6 +405,7 @@ function setupSocketHandlers() {
     codeBlock.classList.remove('hidden');
     roomCodeEl.textContent = roomCode;
     difficultyBlock.classList.remove('hidden');   // host can pick difficulty
+    modeBlock.classList.remove('hidden');
 
     // Generate and display share link
     const shareUrl = new URL(location.href);
@@ -396,6 +433,7 @@ function setupSocketHandlers() {
     lobbyHeading.textContent = `Room ${roomCode}`;
     codeBlock.classList.add('hidden');
     difficultyBlock.classList.add('hidden');      // guests don't pick difficulty
+    modeBlock.classList.add('hidden');
 
     renderPlayerList(players);
     updateStartButton(players);
@@ -418,14 +456,21 @@ function setupSocketHandlers() {
     updateStartButton(players);
   });
 
-  socket.on('game_start', ({ gameState, yourIndex, asteroids, difficulty }) => {
+  socket.on('game_start', ({ gameState, yourIndex, asteroids, difficulty, gameMode, mapName, mapTheme, roundDuration, roundStartAt }) => {
     myPlayerIndex = yourIndex;
     showScreen('game');
-    initGame(socket, gameState, yourIndex, asteroids, difficulty);
+    initGame(socket, gameState, yourIndex, asteroids, difficulty, { gameMode, mapName, mapTheme, roundDuration, roundStartAt });
+  });
+
+  socket.on('return_to_lobby', ({ players, nextMap }) => {
+    if (typeof stopGame === 'function') stopGame();
+    renderPlayerList(players);
+    updateStartButton(players);
+    if (lobbyMapName) lobbyMapName.textContent = nextMap ? `Next map: ${nextMap}` : '';
+    showScreen('lobby');
   });
 
   socket.on('disconnect', (reason) => {
-    // Only show alert if we were actively in a game/lobby (not intentional leave)
     if (reason !== 'io client disconnect') {
       if (typeof stopGame === 'function') stopGame();
       showScreen('menu');

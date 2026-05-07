@@ -23,10 +23,15 @@ const BOOST_MULT     = 2.4;
 const BOOST_MULT_SPD = 2.2;
 const MAX_PLAYERS    = 15;
 const BOT_FILL       = 15;       // total entities when game starts (humans + bots)
-const XP_BLOCK_COUNT = 200;
-const XP_KILL_PLAYER      = 150;
-const XP_KILL_BOT         = 80;
+const XP_BLOCK_COUNT      = 200;
+const XP_KILL_PLAYER      = 100;   // was 150 — slower kill XP
+const XP_KILL_BOT         = 40;    // was 80
 const XP_BLOCK_RESPAWN_MS = 15000;
+const ROUND_DURATION_MS   = 300000; // 5 min default
+const KOTH_ZONE_R         = 420;
+const KOTH_WIN_SCORE      = 120;   // seconds of zone control
+const CTF_WIN_SCORE       = 3;     // flag captures to win
+const CTF_FLAG_RETURN_MS  = 20000; // dropped flag auto-returns after 20 s
 const ANGULAR_ACCEL  = 0.025;
 const ANGULAR_DRAG   = 0.72;
 const ANGULAR_MAX    = 0.088;
@@ -83,40 +88,77 @@ const COLORS = [
   '#aaff66','#ffaa44','#cc44ff','#44ffff','#ff44cc',
 ];
 
-// ─── ASTEROIDS ───────────────────────────────────────────────────────────────
-// Deterministic obstacle field — same layout every server start.
-const ASTEROIDS = (() => {
-  let s = 31415;
+// ─── MAPS ────────────────────────────────────────────────────────────────────
+const MAPS = [
+  {
+    name: 'Open Field', theme: 'default',
+    clusters: [
+      [4800,3600,6,450,60,130],[1650,1425,5,390,45,100],[7950,1425,4,345,50,95],
+      [1500,5775,5,405,45,105],[7950,5775,4,375,50,100],[4800,1350,3,315,40,85],
+      [4800,5850,3,315,45,80],[1500,3600,3,285,40,80],[8100,3600,3,285,40,80],
+      [3300,2400,3,240,35,70],[6300,2400,3,240,35,70],[3300,4800,3,240,35,70],
+      [6300,4800,3,240,35,70],[4800,2400,3,240,35,70],[4800,4800,3,240,35,70],
+      [2400,3600,3,240,35,70],[7200,3600,3,240,35,70],[2200,1000,3,200,35,70],
+      [7400,1000,3,200,35,70],[2200,6200,3,200,35,70],[7400,6200,3,200,35,70],
+    ],
+  },
+  {
+    name: 'Asteroid Belt', theme: 'orange',
+    clusters: [
+      // Dense horizontal band through the center
+      [1200,3600,4,200,70,140],[2400,3300,5,250,65,130],[3600,3800,6,280,70,150],
+      [4800,3600,7,300,80,160],[6000,3400,6,280,70,150],[7200,3700,5,250,65,130],
+      [8400,3600,4,200,70,140],
+      // Sparse edges
+      [1500,1200,2,200,40,80],[7800,1200,2,200,40,80],
+      [1500,6000,2,200,40,80],[7800,6000,2,200,40,80],
+      [4800,900,3,300,45,90],[4800,6300,3,300,45,90],
+    ],
+  },
+  {
+    name: 'Void', theme: 'purple',
+    clusters: [
+      // Almost empty — just a few large lonely rocks
+      [1800,1800,2,180,90,160],[7800,1800,2,180,90,160],
+      [1800,5400,2,180,90,160],[7800,5400,2,180,90,160],
+      [4800,3600,1,100,100,180],
+    ],
+  },
+  {
+    name: 'Labyrinth', theme: 'green',
+    clusters: [
+      // Grid of medium rocks creating corridors
+      [1600,1200,3,120,55,95],[3200,1200,3,120,55,95],[4800,1200,3,120,55,95],
+      [6400,1200,3,120,55,95],[8000,1200,3,120,55,95],
+      [1600,2400,3,120,55,95],[3200,2400,3,120,55,95],[4800,2400,3,120,55,95],
+      [6400,2400,3,120,55,95],[8000,2400,3,120,55,95],
+      [1600,3600,3,120,55,95],                          [6400,3600,3,120,55,95],
+      [8000,3600,3,120,55,95],
+      [1600,4800,3,120,55,95],[3200,4800,3,120,55,95],[4800,4800,3,120,55,95],
+      [6400,4800,3,120,55,95],[8000,4800,3,120,55,95],
+      [1600,6000,3,120,55,95],[3200,6000,3,120,55,95],[4800,6000,3,120,55,95],
+      [6400,6000,3,120,55,95],[8000,6000,3,120,55,95],
+    ],
+  },
+  {
+    name: 'Core Siege', theme: 'red',
+    clusters: [
+      // Giant rocks form an outer fortress ring; open center for team fights
+      [4800,3600,1,60,200,260],  // massive center rock
+      [2200,3600,4,180,80,140],[7400,3600,4,180,80,140],
+      [4800,1400,4,180,80,140],[4800,5800,4,180,80,140],
+      [2800,2000,3,150,65,115],[6800,2000,3,150,65,115],
+      [2800,5200,3,150,65,115],[6800,5200,3,150,65,115],
+    ],
+  },
+];
+
+function generateAsteroids(mapIndex) {
+  const map = MAPS[mapIndex % MAPS.length];
+  let s = 31415 + mapIndex * 99991;
   const rng = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000; };
   const result = [];
-  // [cx, cy, count, spread, rMin, rMax]
-  // All positions/spreads scaled 1.5× to match the 9600×7200 world;
-  // extra clusters added for the larger map area.
-  const clusters = [
-    [4800, 3600, 6, 450,  60, 130],   // center
-    [1650, 1425, 5, 390,  45, 100],   // NW
-    [7950, 1425, 4, 345,  50,  95],   // NE
-    [1500, 5775, 5, 405,  45, 105],   // SW
-    [7950, 5775, 4, 375,  50, 100],   // SE
-    [4800, 1350, 3, 315,  40,  85],   // N
-    [4800, 5850, 3, 315,  45,  80],   // S
-    [1500, 3600, 3, 285,  40,  80],   // W
-    [8100, 3600, 3, 285,  40,  80],   // E
-    [3300, 2400, 3, 240,  35,  70],   // NW-inner
-    [6300, 2400, 3, 240,  35,  70],   // NE-inner
-    [3300, 4800, 3, 240,  35,  70],   // SW-inner
-    [6300, 4800, 3, 240,  35,  70],   // SE-inner
-    // Extra clusters filling the expanded area
-    [4800, 2400, 3, 240,  35,  70],   // N-inner
-    [4800, 4800, 3, 240,  35,  70],   // S-inner
-    [2400, 3600, 3, 240,  35,  70],   // W-inner
-    [7200, 3600, 3, 240,  35,  70],   // E-inner
-    [2200, 1000, 3, 200,  35,  70],   // NNW corner
-    [7400, 1000, 3, 200,  35,  70],   // NNE corner
-    [2200, 6200, 3, 200,  35,  70],   // SSW corner
-    [7400, 6200, 3, 200,  35,  70],   // SSE corner
-  ];
-  for (const [cx, cy, count, spread, rMin, rMax] of clusters) {
+  for (const [cx, cy, count, spread, rMin, rMax] of map.clusters) {
     for (let i = 0; i < count; i++) {
       const angle = rng() * Math.PI * 2;
       const dist  = rng() * spread;
@@ -128,7 +170,7 @@ const ASTEROIDS = (() => {
     }
   }
   return result;
-})();
+}
 
 // ─── IN-MEMORY STATE ──────────────────────────────────────────────────────────
 const rooms      = {};
@@ -191,17 +233,29 @@ function makeXpBlock() {
 }
 
 // ─── GAME STATE FACTORY ───────────────────────────────────────────────────────
-function makeGameState(humanPlayers, difficulty) {
+function makeGameState(humanPlayers, difficulty, mode, mapIndex) {
   const ships = humanPlayers.map((p,i) => makeShip(p.id, i, p.name, false));
   const botCount = difficulty === 'none' ? 0 : Math.max(0, BOT_FILL - humanPlayers.length);
   for (let i = 0; i < botCount; i++) {
     const idx = ships.length;
     ships.push(makeShip('bot_'+idx, idx, botName(), true));
   }
+  // Assign teams for team-based modes
+  if (mode === 'tdm' || mode === 'ctf') {
+    ships.forEach((s, i) => { s.team = i % 2; });
+  }
   const xpBlocks = Array.from({length: XP_BLOCK_COUNT}, () => {
     const b = makeXpBlock(); b.maxHealth = b.health; return b;
   });
-  return { ships, bullets:[], xpBlocks, tick:0 };
+  // Mode-specific entities
+  const CTF_BASE = [{ x:900, y:3600 }, { x:8700, y:3600 }];
+  const ctfFlags = (mode === 'ctf') ? [
+    { team:0, x:CTF_BASE[0].x, y:CTF_BASE[0].y, carrier:null, atBase:true, dropAt:0 },
+    { team:1, x:CTF_BASE[1].x, y:CTF_BASE[1].y, carrier:null, atBase:true, dropAt:0 },
+  ] : null;
+  const kothZone = (mode === 'koth') ? { x:4800, y:3600, r:KOTH_ZONE_R, scores:{} } : null;
+  const brZone   = (mode === 'br')   ? { x:4800, y:3600, r:5400, minR:350 } : null;
+  return { ships, bullets:[], xpBlocks, tick:0, ctfFlags, kothZone, brZone, ctfScore:[0,0], modeScores:{} };
 }
 
 const BOT_NAMES = ['Zephyr','Orion','Nova','Vega','Axle','Kira','Rho','Bolt','Hex','Pix'];
@@ -403,9 +457,12 @@ function resolveCollisions(state, room, now) {
       }
     } else {
       // ── Normal bullet collision ──
+      const bOwner = state.ships[b.ownerIndex];
       for (const target of state.ships) {
         if (remove.has(b.id)) break;
         if (target.index === b.ownerIndex) continue;
+        // No friendly fire in team modes
+        if (bOwner && target.team !== undefined && bOwner.team !== undefined && target.team === bOwner.team) continue;
         if (!target.alive || target.invincible) continue;
         if (Math.hypot(b.x-target.x, b.y-target.y) < SHIP_RADIUS+BULLET_RADIUS) {
           const resist = (target.ss && target.ss.dmgReduce) || 0;
@@ -462,7 +519,8 @@ function handleDeath(ship, killer, state, room, now) {
   ship.alive   = false;
   ship.health  = 0;
   ship.deaths++;
-  // Keep XP — player re-chooses upgrades fresh each life
+  // Full reset each life — XP and tier both start fresh
+  ship.xp          = 0;
   ship.tier        = 0;
   ship.upgradePath = ['root'];
   ship.ss          = computeShipStats(['root']);
@@ -470,16 +528,22 @@ function handleDeath(ship, killer, state, room, now) {
 
   if (killer) {
     killer.kills++;
-    giveXp(killer, ship.isBot ? XP_KILL_BOT : XP_KILL_PLAYER);
+    // Team modes: only count kills on opposing team
+    if (!room.gameMode || room.gameMode === 'ffa' || !ship.team === undefined || ship.team !== killer.team) {
+      giveXp(killer, ship.isBot ? XP_KILL_BOT : XP_KILL_PLAYER);
+    }
     io.to(room.roomCode).emit('kill_event', {
-      killerName: killer.name,
-      killerIndex: killer.index,
-      victimName: ship.name,
-      victimIndex: ship.index,
+      killerName: killer.name, killerIndex: killer.index,
+      victimName: ship.name,   victimIndex: ship.index,
     });
   }
 
-  // Respawn after delay
+  // Battle Royale: no respawn
+  if (room.gameMode === 'br') {
+    ship.respawnAt = 0;
+    return;
+  }
+
   ship.respawnAt = now + RESPAWN_MS;
   if (!ship.isBot) {
     const p = room.players.find(p=>p.id===ship.id);
@@ -495,19 +559,19 @@ function giveXp(ship, amount) {
   }
 }
 
-function tryRespawn(ship, now) {
+function tryRespawn(ship, now, room) {
   if (ship.alive || ship.respawnAt === 0 || now < ship.respawnAt) return;
-  ship.alive         = true;
-  ship.health        = ship.ss.health;
-  ship.vx = ship.vy  = ship.angularVel = 0;
-  ship.x             = rnd(300, WORLD_W-300);
-  ship.y             = rnd(300, WORLD_H-300);
+  ship.alive           = true;
+  ship.health          = ship.ss.health;
+  ship.vx = ship.vy   = ship.angularVel = 0;
+  // Team-side respawn: team 0 spawns left, team 1 spawns right
+  if (ship.team === 0)      { ship.x = rnd(300, WORLD_W*0.35); ship.y = rnd(300, WORLD_H-300); }
+  else if (ship.team === 1) { ship.x = rnd(WORLD_W*0.65, WORLD_W-300); ship.y = rnd(300, WORLD_H-300); }
+  else                       { ship.x = rnd(300, WORLD_W-300); ship.y = rnd(300, WORLD_H-300); }
   ship.invincible      = true;
   ship.invincibleUntil = now + INVINCIBLE_MS;
-  ship.respawnAt = 0;
-  const neededXp = (ship.tier + 1) * XP_PER_TIER;
-  ship.pendingUpgrade = ship.tier < 20 && ship.xp >= neededXp;
-  if (ship.ss.regenRate > 0) ship.health = ship.ss.health;
+  ship.respawnAt       = 0;
+  ship.pendingUpgrade  = false;
 }
 
 // ─── BOT AI ──────────────────────────────────────────────────────────────────
@@ -1069,9 +1133,169 @@ function cleanState(gs) {
     upgradePath:s.upgradePath, pendingUpgrade:s.pendingUpgrade,
     lastBoost:s.lastBoost, respawnAt:s.respawnAt,
     isThomas:s.isThomas, missileCd:s.missileCooldown || 0,
+    team:s.team,
     ss: { boostCd:s.ss.boostCd, health:s.ss.health },
   }));
-  return { ships, bullets: gs.bullets, xpBlocks: gs.xpBlocks.filter(b => b.alive), tick: gs.tick };
+  return {
+    ships, bullets: gs.bullets,
+    xpBlocks: gs.xpBlocks.filter(b => b.alive),
+    tick: gs.tick,
+    ctfFlags: gs.ctfFlags || null,
+    ctfScore:  gs.ctfScore  || null,
+    kothZone:  gs.kothZone  || null,
+    brZone:    gs.brZone    || null,
+  };
+}
+
+// ─── MODE UPDATES ────────────────────────────────────────────────────────────
+
+function updateBR(room, state, now) {
+  const zone = state.brZone;
+  if (!zone || zone.r <= zone.minR) return;
+  // Shrink over the first 4 minutes (240 s = 7272 ticks at 33ms)
+  zone.r = Math.max(zone.minR, zone.r - (5400 - zone.minR) / 7272);
+  // Damage ships outside zone every 20 ticks (~0.66 s)
+  if (state.tick % 20 !== 0) return;
+  for (const ship of state.ships) {
+    if (!ship.alive) continue;
+    const dist = Math.hypot(ship.x - zone.x, ship.y - zone.y);
+    if (dist > zone.r) {
+      ship.health -= 2;
+      if (ship.health <= 0) handleDeath(ship, null, state, room, now);
+    }
+  }
+}
+
+function updateKOTH(room, state, now) {
+  if (!state.kothZone) return;
+  if (state.tick % 30 !== 0) return; // ~1 s granularity
+  const zone = state.kothZone;
+  for (const ship of state.ships) {
+    if (!ship.alive) continue;
+    if (Math.hypot(ship.x - zone.x, ship.y - zone.y) > zone.r) continue;
+    const key = (ship.team !== undefined && room.gameMode !== 'ffa') ? `t${ship.team}` : `p${ship.index}`;
+    zone.scores[key] = (zone.scores[key] || 0) + 1;
+    if (zone.scores[key] >= KOTH_WIN_SCORE) {
+      endRound(room, state, now, 'score', ship.team !== undefined ? `Team ${ship.team === 0 ? 'Cyan' : 'Magenta'}` : ship.name);
+    }
+  }
+}
+
+function updateCTF(room, state, now) {
+  if (!state.ctfFlags) return;
+  const CTF_BASE = [{ x:900, y:3600 }, { x:8700, y:3600 }];
+  const PICKUP_R = 60, CAP_R = 120;
+
+  for (const flag of state.ctfFlags) {
+    // Auto-return dropped flag
+    if (!flag.atBase && flag.carrier === null && flag.dropAt > 0 && now - flag.dropAt > CTF_FLAG_RETURN_MS) {
+      flag.x = CTF_BASE[flag.team].x; flag.y = CTF_BASE[flag.team].y;
+      flag.atBase = true; flag.dropAt = 0;
+    }
+    // If carried, follow carrier
+    const carrier = flag.carrier !== null ? state.ships[flag.carrier] : null;
+    if (carrier) {
+      if (!carrier.alive) {
+        // Drop flag on death
+        flag.x = carrier.x; flag.y = carrier.y;
+        flag.carrier = null; flag.atBase = false; flag.dropAt = now;
+      } else {
+        flag.x = carrier.x; flag.y = carrier.y;
+      }
+    }
+    // Pickup: enemy grabs flag
+    if (flag.atBase || flag.carrier === null) {
+      for (const ship of state.ships) {
+        if (!ship.alive || ship.team === flag.team) continue;
+        if (Math.hypot(ship.x - flag.x, ship.y - flag.y) < PICKUP_R) {
+          flag.carrier = ship.index; flag.atBase = false; break;
+        }
+      }
+    }
+    // Capture: carrier reaches their own base with enemy flag
+    if (carrier && carrier.alive) {
+      const ownBase = CTF_BASE[carrier.team];
+      if (Math.hypot(carrier.x - ownBase.x, carrier.y - ownBase.y) < CAP_R) {
+        // Also verify own flag is still at base
+        const ownFlag = state.ctfFlags[carrier.team];
+        if (ownFlag.atBase) {
+          state.ctfScore[carrier.team]++;
+          flag.x = CTF_BASE[flag.team].x; flag.y = CTF_BASE[flag.team].y;
+          flag.carrier = null; flag.atBase = true; flag.dropAt = 0;
+          io.to(room.roomCode).emit('ctf_capture', { team: carrier.team, score: state.ctfScore });
+          if (state.ctfScore[carrier.team] >= CTF_WIN_SCORE) {
+            endRound(room, state, now, 'score', carrier.team === 0 ? 'Team Cyan' : 'Team Magenta');
+          }
+        }
+      }
+    }
+  }
+}
+
+function endRound(room, state, now, reason, forcedWinner) {
+  if (room._roundEnded) return;
+  room._roundEnded = true;
+  clearInterval(room.gameLoopInterval);
+  room.gameLoopInterval = null;
+
+  // Build scoreboard
+  const scoreboard = state.ships
+    .filter(s => !s.isBot)
+    .map(s => ({ name:s.name, kills:s.kills, deaths:s.deaths,
+                 team:s.team, index:s.index }))
+    .sort((a,b) => b.kills - a.kills);
+
+  // Determine winner
+  let winner = forcedWinner || null;
+  if (!winner) {
+    const mode = room.gameMode || 'ffa';
+    if (mode === 'br') {
+      const last = state.ships.find(s => s.alive);
+      winner = last ? last.name : 'Nobody';
+    } else if (mode === 'tdm') {
+      const t0 = state.ships.filter(s=>s.team===0).reduce((a,s)=>a+s.kills,0);
+      const t1 = state.ships.filter(s=>s.team===1).reduce((a,s)=>a+s.kills,0);
+      winner = t0 > t1 ? 'Team Cyan' : t1 > t0 ? 'Team Magenta' : 'Draw';
+    } else if (mode === 'ctf') {
+      winner = state.ctfScore[0] > state.ctfScore[1] ? 'Team Cyan'
+             : state.ctfScore[1] > state.ctfScore[0] ? 'Team Magenta' : 'Draw';
+    } else {
+      const top = scoreboard[0];
+      winner = top ? top.name : 'Nobody';
+    }
+  }
+
+  const nextMap = MAPS[((room.mapIndex || 0) + 1) % MAPS.length].name;
+  io.to(room.roomCode).emit('round_end', { reason, winner, scoreboard, nextMap });
+
+  // Reset room and return to lobby after 9 s
+  setTimeout(() => {
+    room.mapIndex     = ((room.mapIndex || 0) + 1) % MAPS.length;
+    room.gameStarted  = false;
+    room.gameState    = null;
+    room._roundEnded  = false;
+    const list = room.players.map(p => ({ name:p.name, index:p.index }));
+    io.to(room.roomCode).emit('return_to_lobby', { players: list, nextMap });
+    if (room.isPublic) {
+      const pubList = Object.values(rooms).filter(r=>r.isPublic).map(r=>({
+        code:r.roomCode, playerCount:r.players.length,
+        botDiff:r.botDifficulty||'medium', inProgress:r.gameStarted,
+      }));
+      io.emit('public_rooms', pubList);
+    }
+  }, 9000);
+}
+
+function checkWinCondition(room, state, now) {
+  if (!room.gameState) return;
+  const mode = room.gameMode || 'ffa';
+  // BR: last ship standing
+  if (mode === 'br') {
+    const alive = state.ships.filter(s => s.alive);
+    if (alive.length <= 1) {
+      endRound(room, state, now, 'elimination', alive[0] ? alive[0].name : 'Nobody');
+    }
+  }
 }
 
 function broadcast(room) {
@@ -1088,12 +1312,17 @@ function startLoop(room) {
     state.tick++;
     const now = Date.now();
 
+    // Round timer
+    if (room.roundDuration > 0 && room.roundStartAt && !room._roundEnded) {
+      if (now - room.roundStartAt >= room.roundDuration) {
+        endRound(room, state, now, 'time');
+        return;
+      }
+    }
+
     for (const ship of state.ships) {
-      // Clear invincibility
       if (ship.invincible && now >= ship.invincibleUntil) ship.invincible = false;
-      // Try respawn
-      tryRespawn(ship, now);
-      // Regen
+      tryRespawn(ship, now, room);
       if (ship.alive && ship.ss.regenRate > 0) {
         const interval = Math.max(1, Math.floor(300 / ship.ss.regenRate));
         if (state.tick % interval === 0 && ship.health < ship.ss.health) ship.health++;
@@ -1121,6 +1350,16 @@ function startLoop(room) {
     }
     stepBullets(state);
     resolveCollisions(state, room, now);
+
+    // Mode-specific updates
+    if (!room._roundEnded) {
+      const mode = room.gameMode || 'ffa';
+      if (mode === 'br')   updateBR(room, state, now);
+      if (mode === 'koth') updateKOTH(room, state, now);
+      if (mode === 'ctf')  updateCTF(room, state, now);
+      checkWinCondition(room, state, now);
+    }
+
     broadcast(room);
   }, 33);
 }
@@ -1203,6 +1442,9 @@ io.on('connection', socket => {
       gameStarted: false, gameState:null, gameLoopInterval:null,
       shutdownTimer: null,
       inputs: Array.from({length:MAX_PLAYERS}, emptyInput),
+      mapIndex: 0, asteroids: generateAsteroids(0),
+      gameMode: 'ffa', roundDuration: ROUND_DURATION_MS,
+      _roundEnded: false,
     };
     socketRoom[socket.id] = code;
     socket.join(code);
@@ -1244,29 +1486,41 @@ io.on('connection', socket => {
     const ship = makeShip(socket.id, idx, pName, false);
     room.gameState.ships.push(ship);
     while (room.inputs.length <= idx) room.inputs.push(emptyInput());
+    const mapIdx = room.mapIndex || 0;
     socket.emit('game_start', {
       yourIndex:   idx,
       gameState:   cleanState(room.gameState),
       upgradeTree: UPGRADE_TREE,
       difficulty:  room.botDifficulty,
+      gameMode:    room.gameMode || 'ffa',
+      roundDuration: room.roundDuration || 0,
+      roundStartAt:  room.roundStartAt  || 0,
+      mapName:     MAPS[mapIdx].name,
+      mapTheme:    MAPS[mapIdx].theme,
       worldW:      WORLD_W,
       worldH:      WORLD_H,
-      asteroids:   ASTEROIDS,
+      asteroids:   room.asteroids,
     });
     broadcastPublicRooms();
   });
 
-  socket.on('start_game', ({ difficulty } = {}) => {
+  socket.on('start_game', ({ difficulty, gameMode, roundDuration } = {}) => {
     const code = socketRoom[socket.id];
     const room = code && rooms[code];
     if (!room || room.gameStarted) return;
     const p = room.players.find(p=>p.id===socket.id);
     if (!p || p.index !== 0) return;
 
+    const VALID_MODES = ['ffa','tdm','br','koth','ctf'];
     room.botDifficulty = ['easy','medium','beast','none'].includes(difficulty) ? difficulty : 'medium';
+    room.gameMode      = VALID_MODES.includes(gameMode) ? gameMode : 'ffa';
+    room.roundDuration = (typeof roundDuration === 'number' && roundDuration >= 0) ? roundDuration * 1000 : ROUND_DURATION_MS;
+    room.mapIndex      = (room.mapIndex || 0) % MAPS.length;
+    room.asteroids     = generateAsteroids(room.mapIndex);
+    room.roundStartAt  = Date.now();
+    room._roundEnded   = false;
     room.gameStarted   = true;
-    room.gameState     = makeGameState(room.players, room.botDifficulty);
-    // Make sure inputs array covers all ships
+    room.gameState     = makeGameState(room.players, room.botDifficulty, room.gameMode, room.mapIndex);
     while (room.inputs.length < room.gameState.ships.length) room.inputs.push(emptyInput());
 
     for (const pl of room.players) {
@@ -1275,9 +1529,14 @@ io.on('connection', socket => {
         gameState:   cleanState(room.gameState),
         upgradeTree: UPGRADE_TREE,
         difficulty:  room.botDifficulty,
+        gameMode:    room.gameMode,
+        roundDuration: room.roundDuration,
+        roundStartAt:  room.roundStartAt,
+        mapName:     MAPS[room.mapIndex].name,
+        mapTheme:    MAPS[room.mapIndex].theme,
         worldW:      WORLD_W,
         worldH:      WORLD_H,
-        asteroids:   ASTEROIDS,
+        asteroids:   room.asteroids,
       });
     }
     startLoop(room);
