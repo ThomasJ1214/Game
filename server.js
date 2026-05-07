@@ -845,12 +845,7 @@ function handleDeath(ship, killer, state, room, now) {
   ship.alive   = false;
   ship.health  = 0;
   ship.deaths++;
-  // Full reset each life — XP and tier both start fresh
-  ship.xp          = 0;
-  ship.tier        = 0;
-  ship.upgradePath = ['root'];
-  ship.ss          = computeShipStats(['root']);
-  ship.pendingUpgrade = false;
+  // XP and upgrades persist between deaths — they reset via makeGameState on a new round
 
   if (killer) {
     killer.kills++;
@@ -897,7 +892,7 @@ function tryRespawn(ship, now, room) {
   ship.invincible      = true;
   ship.invincibleUntil = now + INVINCIBLE_MS;
   ship.respawnAt       = 0;
-  ship.pendingUpgrade  = false;
+  // pendingUpgrade kept — player may still have an upgrade waiting from before death
 }
 
 // ─── BOT AI ──────────────────────────────────────────────────────────────────
@@ -1031,9 +1026,40 @@ function getBotModeGoal(bot, state, gameMode) {
   if (gameMode === 'koth') {
     const zone = state.kothZone;
     if (!zone) return null;
-    const dist = Math.hypot(bot.x - zone.x, bot.y - zone.y);
-    if (dist > zone.r * 0.8) return { x: zone.x, y: zone.y, priority: 'high' };
-    return { x: zone.x, y: zone.y, priority: 'low' };
+    const distToZone = Math.hypot(bot.x - zone.x, bot.y - zone.y);
+    const inZone = distToZone <= zone.r;
+    const myTeam = bot.team;
+
+    // Find enemies and friends in the zone
+    let enemyInZone = null;
+    let friendInZone = false;
+    for (const s of state.ships) {
+      if (!s.alive || s.index === bot.index) continue;
+      if (Math.hypot(s.x - zone.x, s.y - zone.y) > zone.r) continue;
+      const isEnemy = myTeam !== undefined ? s.team !== myTeam : true;
+      if (isEnemy) { if (!enemyInZone) enemyInZone = s; }
+      else friendInZone = true;
+    }
+
+    // Enemy scoring unchallenged → contest with critical urgency
+    if (enemyInZone && !friendInZone && !inZone) {
+      return { x: enemyInZone.x, y: enemyInZone.y, priority: 'critical', ship: enemyInZone };
+    }
+    // Enemy in zone while bot is also in zone → fight them (medium keeps it from overriding a closer hunt)
+    if (enemyInZone && inZone) {
+      return { x: enemyInZone.x, y: enemyInZone.y, priority: 'medium', ship: enemyInZone };
+    }
+    // Far from zone → close in with high priority
+    if (distToZone > zone.r * 0.85) {
+      return { x: zone.x, y: zone.y, priority: 'high' };
+    }
+    // In/near zone with no enemies inside → hold position with medium priority; spread bots out slightly
+    const spreadAng = bot.index * 1.2 + 0.8;
+    return {
+      x: zone.x + Math.cos(spreadAng) * zone.r * 0.35,
+      y: zone.y + Math.sin(spreadAng) * zone.r * 0.35,
+      priority: 'medium',
+    };
   }
 
   if (gameMode === 'ctf') {
@@ -1627,22 +1653,44 @@ function updateKOTH(room, state, now) {
   if (!state.kothZone) return;
   if (state.tick % 30 !== 0) return; // ~1 s granularity
   const zone = state.kothZone;
-  let controller = null;
-  for (const ship of state.ships) {
-    if (!ship.alive) continue;
-    if (Math.hypot(ship.x - zone.x, ship.y - zone.y) > zone.r) continue;
-    controller = ship;
-    const key = (ship.team !== undefined && room.gameMode !== 'ffa') ? `t${ship.team}` : `p${ship.index}`;
-    zone.scores[key] = (zone.scores[key] || 0) + 1;
-    // Announce control every 15 seconds (450 ticks / 30 = 15 intervals)
-    if (zone.scores[key] % 15 === 0) {
-      const label = ship.team !== undefined ? (ship.team === 0 ? 'Cyan team' : 'Magenta team') : ship.name;
-      const pts = zone.scores[key];
-      io.to(room.roomCode).emit('game_announce', { msg: `⭐ ${label} holds the hill! (${pts}/${KOTH_WIN_SCORE}s)`, col: '#ffff44', dur: 3000 });
+
+  const inZone = state.ships.filter(s =>
+    s.alive && Math.hypot(s.x - zone.x, s.y - zone.y) <= zone.r
+  );
+
+  if (inZone.length === 0) {
+    zone.contested = false;
+    zone._contestedTicks = 0;
+    return;
+  }
+
+  // Contested: multiple teams (or FFA multiple players) on hill → nobody scores
+  const isTeamMode = inZone.some(s => s.team !== undefined);
+  const contested  = isTeamMode
+    ? new Set(inZone.map(s => s.team)).size > 1
+    : inZone.length > 1;
+
+  zone.contested = contested;
+  if (contested) {
+    zone._contestedTicks = (zone._contestedTicks || 0) + 1;
+    if (zone._contestedTicks % 10 === 1) {
+      io.to(room.roomCode).emit('game_announce', { msg: '⚔ Hill contested!', col: '#ff8844', dur: 2000 });
     }
-    if (zone.scores[key] >= KOTH_WIN_SCORE) {
-      endRound(room, state, now, 'score', ship.team !== undefined ? `Team ${ship.team === 0 ? 'Cyan' : 'Magenta'}` : ship.name);
-    }
+    return;
+  }
+  zone._contestedTicks = 0;
+
+  // Uncontested — score for the controlling team/player
+  const scorer = inZone[0];
+  const key = (scorer.team !== undefined && room.gameMode !== 'ffa') ? `t${scorer.team}` : `p${scorer.index}`;
+  zone.scores[key] = (zone.scores[key] || 0) + 1;
+  if (zone.scores[key] % 15 === 0) {
+    const label = scorer.team !== undefined ? (scorer.team === 0 ? 'Cyan team' : 'Magenta team') : scorer.name;
+    const pts   = zone.scores[key];
+    io.to(room.roomCode).emit('game_announce', { msg: `⭐ ${label} holds the hill! (${pts}/${KOTH_WIN_SCORE}s)`, col: '#ffff44', dur: 3000 });
+  }
+  if (zone.scores[key] >= KOTH_WIN_SCORE) {
+    endRound(room, state, now, 'score', scorer.team !== undefined ? `Team ${scorer.team === 0 ? 'Cyan' : 'Magenta'}` : scorer.name);
   }
 }
 

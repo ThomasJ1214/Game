@@ -907,20 +907,32 @@ function drawKOTHZone(state, now) {
     ctx.globalAlpha = 1;
     ctx.shadowBlur  = 0;
   }
-  // Star icon
-  ctx.fillStyle   = `rgba(255,204,0,0.55)`;
-  ctx.font        = 'bold 32px monospace';
-  ctx.textAlign   = 'center';
-  ctx.fillText('★', z.x, z.y + 11);
-  // Score label inside zone
-  if (leadScore > 0) {
-    ctx.font      = 'bold 12px monospace';
-    ctx.fillStyle = zoneCol;
-    ctx.shadowColor = zoneCol;
-    ctx.shadowBlur  = 8;
-    ctx.fillText(`${leadScore}/${KOTH_WIN}s`, z.x, z.y + 30);
-    ctx.shadowBlur = 0;
+  // Star icon (red ✖ when contested)
+  ctx.font      = 'bold 32px monospace';
+  ctx.textAlign = 'center';
+  if (z.contested) {
+    ctx.fillStyle   = '#ff4400';
+    ctx.shadowColor = '#ff4400';
+    ctx.shadowBlur  = 20;
+    ctx.fillText('✖', z.x, z.y + 11);
+    ctx.font      = 'bold 13px monospace';
+    ctx.fillStyle = '#ff8844';
+    ctx.shadowColor = '#ff4400';
+    ctx.shadowBlur  = 10;
+    ctx.fillText('CONTESTED', z.x, z.y + 32);
+  } else {
+    ctx.fillStyle   = `rgba(255,204,0,0.55)`;
+    ctx.shadowBlur  = 0;
+    ctx.fillText('★', z.x, z.y + 11);
+    if (leadScore > 0) {
+      ctx.font      = 'bold 12px monospace';
+      ctx.fillStyle = zoneCol;
+      ctx.shadowColor = zoneCol;
+      ctx.shadowBlur  = 8;
+      ctx.fillText(`${leadScore}/${KOTH_WIN}s`, z.x, z.y + 30);
+    }
   }
+  ctx.shadowBlur = 0;
   ctx.restore();
 }
 
@@ -2043,11 +2055,16 @@ function drawMinimap(state) {
   // KOTH zone circle
   if (state.kothZone) {
     const z = state.kothZone;
-    ctx.strokeStyle = 'rgba(255,204,0,0.55)';
-    ctx.lineWidth   = 1.5;
+    ctx.strokeStyle = z.contested ? 'rgba(255,80,0,0.8)' : 'rgba(255,204,0,0.55)';
+    ctx.lineWidth   = z.contested ? 2 : 1.5;
     ctx.beginPath();
     ctx.arc(MX + z.x * sx, MY + z.y * sy, z.r * sx, 0, Math.PI * 2);
     ctx.stroke();
+    // Star / cross icon at zone center
+    ctx.font      = '8px monospace';
+    ctx.fillStyle = z.contested ? '#ff8844' : '#ffcc44';
+    ctx.textAlign = 'center';
+    ctx.fillText(z.contested ? '✖' : '★', MX + z.x * sx, MY + z.y * sy + 3);
   }
 
   // CTF: base markers + flag positions
