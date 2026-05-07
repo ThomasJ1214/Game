@@ -842,7 +842,7 @@ function handleDeath(ship, killer, state, room, now) {
   if (killer) {
     killer.kills++;
     // Team modes: only count kills on opposing team
-    if (!room.gameMode || room.gameMode === 'ffa' || !ship.team === undefined || ship.team !== killer.team) {
+    if (!room.gameMode || room.gameMode === 'ffa' || ship.team === undefined || ship.team !== killer.team) {
       giveXp(killer, ship.isBot ? XP_KILL_BOT : XP_KILL_PLAYER);
     }
     io.to(room.roomCode).emit('kill_event', {
@@ -977,8 +977,49 @@ function avoidHazardsBeast(bot, aimX, aimY) {
   return [aimX, aimY];
 }
 
+const CTF_BASES = [{ x: 900, y: 3600 }, { x: 8700, y: 3600 }];
+
+function getBotModeGoal(bot, state, gameMode) {
+  if (!gameMode || gameMode === 'ffa') return null;
+
+  if (gameMode === 'br') {
+    const zone = state.brZone;
+    if (!zone) return null;
+    const dist = Math.hypot(bot.x - zone.x, bot.y - zone.y);
+    if (dist > zone.r - SHIP_RADIUS - 100) return { x: zone.x, y: zone.y, priority: 'critical' };
+    if (dist > zone.r * 0.72)              return { x: zone.x + (bot.x - zone.x) * 0.15, y: zone.y + (bot.y - zone.y) * 0.15, priority: 'medium' };
+    return null;
+  }
+
+  if (gameMode === 'koth') {
+    const zone = state.kothZone;
+    if (!zone) return null;
+    const dist = Math.hypot(bot.x - zone.x, bot.y - zone.y);
+    if (dist > zone.r * 0.8) return { x: zone.x, y: zone.y, priority: 'high' };
+    return { x: zone.x, y: zone.y, priority: 'low' };
+  }
+
+  if (gameMode === 'ctf') {
+    const flags = state.ctfFlags;
+    if (!flags) return null;
+    const myTeam = bot.team !== undefined ? bot.team : 0;
+    if (flags.some(f => f.team !== myTeam && f.carrier === bot.index))
+      return { x: CTF_BASES[myTeam].x, y: CTF_BASES[myTeam].y, priority: 'critical' };
+    const ownFlag = flags.find(f => f.team === myTeam);
+    if (ownFlag && ownFlag.carrier !== null) {
+      const carrier = state.ships[ownFlag.carrier];
+      if (carrier && carrier.alive) return { x: carrier.x, y: carrier.y, priority: 'high' };
+    }
+    const enemyFlag = flags.find(f => f.team !== myTeam && f.carrier === null);
+    if (enemyFlag) return { x: enemyFlag.x, y: enemyFlag.y, priority: 'medium' };
+    return null;
+  }
+
+  return null;
+}
+
 // ── BEAST: Advanced full-map-aware AI ────────────────────────────────────────
-function botThinkBeast(bot, state, now) {
+function botThinkBeast(bot, state, now, gameMode) {
   if (!bot.alive) return emptyInput();
 
   // ── 1. Instant upgrade with diverse branch strategy ───────────────────
@@ -1030,6 +1071,7 @@ function botThinkBeast(bot, state, now) {
     let target = null, bestTScore = -Infinity;
     for (const s of state.ships) {
       if (s.index === bot.index || !s.alive) continue;
+      if ((gameMode === 'tdm' || gameMode === 'ctf') && s.team !== undefined && bot.team !== undefined && s.team === bot.team) continue;
       const dist    = Math.hypot(s.x - bot.x, s.y - bot.y);
       const maxHp   = s.maxHealth || (s.ss && s.ss.health) || 5;
       const hpRatio = s.health / maxHp;
@@ -1193,6 +1235,23 @@ function botThinkBeast(bot, state, now) {
       aimX = bot._wanderPt.x; aimY = bot._wanderPt.y;
     }
 
+    // Mode-specific goal injection (overrides wander/intercept/farm for objectives)
+    const modeGoal = getBotModeGoal(bot, state, gameMode);
+    if (modeGoal) {
+      const overrides = {
+        critical: bState !== 'retreat',
+        high:     bState !== 'retreat' && bState !== 'dodge',
+        medium:   bState === 'wander' || bState === 'intercept' || bState === 'farm',
+        low:      bState === 'wander',
+      };
+      if (overrides[modeGoal.priority]) {
+        bState = 'wander';
+        aimX = modeGoal.x; aimY = modeGoal.y;
+        if (!bot._wanderPt) bot._wanderPt = { x: aimX, y: aimY };
+        bot._wanderPt.x = aimX; bot._wanderPt.y = aimY;
+      }
+    }
+
     [aimX, aimY] = avoidHazardsBeast(bot, aimX, aimY);
 
     // Cache all tactical decisions
@@ -1302,11 +1361,11 @@ function botThinkBeast(bot, state, now) {
 }
 
 // ── EASY / MEDIUM: original AI ────────────────────────────────────────────────
-function botThink(bot, state, now, difficulty) {
+function botThink(bot, state, now, difficulty, gameMode) {
   if (!bot.alive) return emptyInput();
 
   // Route beast difficulty to the advanced brain
-  if (difficulty === 'beast') return botThinkBeast(bot, state, now);
+  if (difficulty === 'beast') return botThinkBeast(bot, state, now, gameMode);
 
   const p = DIFF_PARAMS[difficulty] || DIFF_PARAMS.medium;
 
@@ -1352,6 +1411,7 @@ function botThink(bot, state, now, difficulty) {
     let nearEnemyDist = Infinity, nearEnemy = null;
     for (const s of state.ships) {
       if (s.index === bot.index || !s.alive) continue;
+      if ((gameMode === 'tdm' || gameMode === 'ctf') && s.team !== undefined && bot.team !== undefined && s.team === bot.team) continue;
       const d = Math.hypot(s.x - bot.x, s.y - bot.y);
       if (d < nearEnemyDist) { nearEnemyDist = d; nearEnemy = s; }
     }
@@ -1378,6 +1438,23 @@ function botThink(bot, state, now, difficulty) {
         bot._wanderPt = { x: rnd(300, WORLD_W - 300), y: rnd(300, WORLD_H - 300) };
       }
       bot._botTarget = { type: 'wander', obj: bot._wanderPt };
+    }
+
+    // Mode-specific goal overrides
+    const modeGoal = getBotModeGoal(bot, state, gameMode);
+    if (modeGoal) {
+      const curState = bot._botState;
+      const shouldOverride =
+        modeGoal.priority === 'critical' ||
+        (modeGoal.priority === 'high'   && curState !== 'retreat') ||
+        (modeGoal.priority === 'medium' && (curState === 'wander' || !nearEnemy)) ||
+        (modeGoal.priority === 'low'    && curState === 'wander');
+      if (shouldOverride) {
+        if (!bot._wanderPt) bot._wanderPt = { x: 0, y: 0 };
+        bot._wanderPt.x = modeGoal.x; bot._wanderPt.y = modeGoal.y;
+        bot._botState   = 'wander';
+        bot._botTarget  = { type: 'wander', obj: bot._wanderPt };
+      }
     }
   }
 
@@ -1469,6 +1546,21 @@ function updateBR(room, state, now) {
   zone.r = Math.max(zone.minR, zone.r - (5400 - zone.minR) / 7272);
   // Damage ships outside zone every 20 ticks (~0.66 s)
   if (state.tick % 20 !== 0) return;
+  // Warn once when zone reaches 75% and 50% of original size
+  if (!room._brWarnedAt) room._brWarnedAt = {};
+  const pct = Math.round((zone.r / 5400) * 100);
+  if (pct <= 75 && !room._brWarnedAt[75]) {
+    room._brWarnedAt[75] = true;
+    io.to(room.roomCode).emit('game_announce', { msg: '⚠ Zone shrinking — stay inside!', col: '#ff8800', dur: 4000 });
+  }
+  if (pct <= 50 && !room._brWarnedAt[50]) {
+    room._brWarnedAt[50] = true;
+    io.to(room.roomCode).emit('game_announce', { msg: '⚠ Zone closing fast!', col: '#ff4444', dur: 4000 });
+  }
+  if (pct <= 25 && !room._brWarnedAt[25]) {
+    room._brWarnedAt[25] = true;
+    io.to(room.roomCode).emit('game_announce', { msg: '🔴 Final zone!', col: '#ff2222', dur: 4000 });
+  }
   for (const ship of state.ships) {
     if (!ship.alive) continue;
     const dist = Math.hypot(ship.x - zone.x, ship.y - zone.y);
@@ -1483,11 +1575,19 @@ function updateKOTH(room, state, now) {
   if (!state.kothZone) return;
   if (state.tick % 30 !== 0) return; // ~1 s granularity
   const zone = state.kothZone;
+  let controller = null;
   for (const ship of state.ships) {
     if (!ship.alive) continue;
     if (Math.hypot(ship.x - zone.x, ship.y - zone.y) > zone.r) continue;
+    controller = ship;
     const key = (ship.team !== undefined && room.gameMode !== 'ffa') ? `t${ship.team}` : `p${ship.index}`;
     zone.scores[key] = (zone.scores[key] || 0) + 1;
+    // Announce control every 15 seconds (450 ticks / 30 = 15 intervals)
+    if (zone.scores[key] % 15 === 0) {
+      const label = ship.team !== undefined ? (ship.team === 0 ? 'Cyan team' : 'Magenta team') : ship.name;
+      const pts = zone.scores[key];
+      io.to(room.roomCode).emit('game_announce', { msg: `⭐ ${label} holds the hill! (${pts}/${KOTH_WIN_SCORE}s)`, col: '#ffff44', dur: 3000 });
+    }
     if (zone.scores[key] >= KOTH_WIN_SCORE) {
       endRound(room, state, now, 'score', ship.team !== undefined ? `Team ${ship.team === 0 ? 'Cyan' : 'Magenta'}` : ship.name);
     }
@@ -1504,6 +1604,8 @@ function updateCTF(room, state, now) {
     if (!flag.atBase && flag.carrier === null && flag.dropAt > 0 && now - flag.dropAt > CTF_FLAG_RETURN_MS) {
       flag.x = CTF_BASE[flag.team].x; flag.y = CTF_BASE[flag.team].y;
       flag.atBase = true; flag.dropAt = 0;
+      const teamName = flag.team === 0 ? 'Cyan' : 'Magenta';
+      io.to(room.roomCode).emit('game_announce', { msg: `🔵 ${teamName} flag returned to base.`, col: '#88aaff', dur: 3000 });
     }
     // If carried, follow carrier
     const carrier = flag.carrier !== null ? state.ships[flag.carrier] : null;
@@ -1512,6 +1614,8 @@ function updateCTF(room, state, now) {
         // Drop flag on death
         flag.x = carrier.x; flag.y = carrier.y;
         flag.carrier = null; flag.atBase = false; flag.dropAt = now;
+        const teamName = flag.team === 0 ? 'Cyan' : 'Magenta';
+        io.to(room.roomCode).emit('game_announce', { msg: `💀 ${teamName} flag dropped!`, col: '#ff8844', dur: 3500 });
       } else {
         flag.x = carrier.x; flag.y = carrier.y;
       }
@@ -1521,7 +1625,10 @@ function updateCTF(room, state, now) {
       for (const ship of state.ships) {
         if (!ship.alive || ship.team === flag.team) continue;
         if (Math.hypot(ship.x - flag.x, ship.y - flag.y) < PICKUP_R) {
-          flag.carrier = ship.index; flag.atBase = false; break;
+          flag.carrier = ship.index; flag.atBase = false;
+          const teamName = flag.team === 0 ? 'Cyan' : 'Magenta';
+          io.to(room.roomCode).emit('game_announce', { msg: `🚩 ${ship.name} grabbed the ${teamName} flag!`, col: '#ffff44', dur: 4000 });
+          break;
         }
       }
     }
@@ -1536,6 +1643,8 @@ function updateCTF(room, state, now) {
           flag.x = CTF_BASE[flag.team].x; flag.y = CTF_BASE[flag.team].y;
           flag.carrier = null; flag.atBase = true; flag.dropAt = 0;
           io.to(room.roomCode).emit('ctf_capture', { team: carrier.team, score: state.ctfScore });
+          const capTeam = carrier.team === 0 ? 'Cyan' : 'Magenta';
+          io.to(room.roomCode).emit('game_announce', { msg: `🏆 ${capTeam} team captured the flag! (${state.ctfScore[carrier.team]}/${CTF_WIN_SCORE})`, col: carrier.team === 0 ? '#00ffff' : '#ff44aa', dur: 5000 });
           if (state.ctfScore[carrier.team] >= CTF_WIN_SCORE) {
             endRound(room, state, now, 'score', carrier.team === 0 ? 'Team Cyan' : 'Team Magenta');
           }
@@ -1587,16 +1696,24 @@ function endRound(room, state, now, reason, forcedWinner) {
     room.gameStarted  = false;
     room.gameState    = null;
     room._roundEnded  = false;
+    room.inputs       = Array.from({ length: MAX_PLAYERS }, emptyInput);
+
+    if (room.isAlwaysOpen) {
+      // Cycle game mode too, refresh asteroids
+      room.gameMode  = GAME_MODES[(GAME_MODES.indexOf(room.gameMode) + 1) % GAME_MODES.length];
+      room.asteroids = generateAsteroids(room.mapIndex);
+      if (room.players.length > 0) {
+        // Players still here — auto-start next round after a brief pause
+        setTimeout(() => launchAlwaysOnGame(room), 4000);
+      }
+      broadcastPublicRooms();
+      return;
+    }
+
     const list = room.players.map(p => ({ name:p.name, index:p.index }));
     io.to(room.roomCode).emit('return_to_lobby', { players: list, nextMap,
       gameMode: room.gameMode, mapName: MAPS[room.mapIndex % MAPS.length].name });
-    if (room.isPublic) {
-      const pubList = Object.values(rooms).filter(r=>r.isPublic).map(r=>({
-        code:r.roomCode, playerCount:r.players.length,
-        botDiff:r.botDifficulty||'medium', inProgress:r.gameStarted,
-      }));
-      io.emit('public_rooms', pubList);
-    }
+    if (room.isPublic) broadcastPublicRooms();
   }, 9000);
 }
 
@@ -1655,7 +1772,7 @@ function startLoop(room) {
     // Compute inputs (human from buffer, bots from AI)
     const inputs = room.inputs.slice();
     for (const ship of state.ships) {
-      if (ship.isBot && ship.alive) inputs[ship.index] = botThink(ship, state, now, room.botDifficulty);
+      if (ship.isBot && ship.alive) inputs[ship.index] = botThink(ship, state, now, room.botDifficulty, room.gameMode);
     }
 
     for (const ship of state.ships) {
@@ -1701,16 +1818,33 @@ function cleanup(socket) {
     for (const p of room.players) {
       io.to(p.id).emit('player_left', { name: leaver ? leaver.name : 'Player' });
     }
-    // Shut down the room 15 s after the last human leaves
-    if (room.players.length === 0 && !room.shutdownTimer) {
-      room.shutdownTimer = setTimeout(() => {
+    // Last human left
+    if (room.players.length === 0) {
+      if (room.isAlwaysOpen) {
+        // Reset always-on lobby instead of deleting
         clearInterval(room.gameLoopInterval);
-        delete rooms[code];
-      }, 15000);
+        room.gameLoopInterval = null;
+        room.gameStarted  = false;
+        room.gameState    = null;
+        room._roundEnded  = false;
+        room.mapIndex     = (room.mapIndex + 1) % MAPS.length;
+        room.gameMode     = GAME_MODES[(GAME_MODES.indexOf(room.gameMode) + 1) % GAME_MODES.length];
+        room.asteroids    = generateAsteroids(room.mapIndex);
+        room.inputs       = Array.from({ length: MAX_PLAYERS }, emptyInput);
+        broadcastPublicRooms();
+        return;
+      }
+      if (!room.shutdownTimer) {
+        room.shutdownTimer = setTimeout(() => {
+          clearInterval(room.gameLoopInterval);
+          delete rooms[code];
+        }, 15000);
+      }
     }
   } else {
     // Game not started yet, clean up if empty
     if (room.players.length === 0) {
+      if (room.isAlwaysOpen) { broadcastPublicRooms(); return; }
       if (room.gameLoopInterval) clearInterval(room.gameLoopInterval);
       delete rooms[code];
       return;
@@ -1721,31 +1855,69 @@ function cleanup(socket) {
   }
 }
 
+function getPublicRoomsList() {
+  return Object.values(rooms)
+    .filter(r => r.isPublic)
+    .map(r => ({
+      code:        r.roomCode,
+      playerCount: r.players.length,
+      botDiff:     r.botDifficulty || 'medium',
+      inProgress:  r.gameStarted,
+    }));
+}
+function broadcastPublicRooms() { io.emit('public_rooms', getPublicRoomsList()); }
+
+// ─── ALWAYS-ON PUBLIC LOBBY ───────────────────────────────────────────────────
+const ALWAYS_ON_CODE = 'OPEN';
+
+function launchAlwaysOnGame(room) {
+  if (room.gameStarted || !room.players.length) return;
+  const difficulty = room.botDifficulty || 'medium';
+  room.roundStartAt = Date.now();
+  room._roundEnded  = false;
+  room.gameStarted  = true;
+  room.inputs       = Array.from({ length: MAX_PLAYERS }, emptyInput);
+  room.gameState    = makeGameState(room.players, difficulty, room.gameMode, room.mapIndex);
+  for (const pl of room.players) {
+    io.to(pl.id).emit('game_start', {
+      yourIndex:    pl.index,
+      gameState:    cleanState(room.gameState),
+      upgradeTree:  UPGRADE_TREE,
+      difficulty,
+      gameMode:     room.gameMode,
+      roundDuration: room.roundDuration,
+      roundStartAt:  room.roundStartAt,
+      mapName:      MAPS[room.mapIndex % MAPS.length].name,
+      mapTheme:     MAPS[room.mapIndex % MAPS.length].theme,
+      worldW:       WORLD_W, worldH: WORLD_H,
+      asteroids:    room.asteroids,
+    });
+  }
+  startLoop(room);
+  broadcastPublicRooms();
+}
+
+function createAlwaysOnLobby() {
+  const idx = globalMapIndex;
+  rooms[ALWAYS_ON_CODE] = {
+    roomCode:      ALWAYS_ON_CODE,
+    isPublic:      true,
+    isAlwaysOpen:  true,
+    players:       [],
+    gameStarted:   false, gameState: null, gameLoopInterval: null,
+    shutdownTimer: null,
+    inputs:        Array.from({ length: MAX_PLAYERS }, emptyInput),
+    mapIndex:      idx, asteroids: generateAsteroids(idx),
+    gameMode:      globalGameMode, roundDuration: ROUND_DURATION_MS,
+    botDifficulty: 'medium',
+    _roundEnded:   false,
+  };
+}
+
 io.on('connection', socket => {
 
-  // ── Public room list broadcast ───────────────────────────────────────────────
-  function broadcastPublicRooms() {
-    const list = Object.values(rooms)
-      .filter(r => r.isPublic)
-      .map(r => ({
-        code:        r.roomCode,
-        playerCount: r.players.length,
-        botDiff:     r.botDifficulty || 'medium',
-        inProgress:  r.gameStarted,
-      }));
-    io.emit('public_rooms', list);
-  }
-
   socket.on('get_public_rooms', () => {
-    const list = Object.values(rooms)
-      .filter(r => r.isPublic)
-      .map(r => ({
-        code:        r.roomCode,
-        playerCount: r.players.length,
-        botDiff:     r.botDifficulty || 'medium',
-        inProgress:  r.gameStarted,
-      }));
-    socket.emit('public_rooms', list);
+    socket.emit('public_rooms', getPublicRoomsList());
   });
 
   socket.on('create_lobby', ({ name, isPublic }) => {
@@ -1786,6 +1958,10 @@ io.on('connection', socket => {
     socket.emit('lobby_joined', {roomCode:code, playerIndex:idx, players:list, ...modeInfo});
     io.to(code).emit('lobby_update', {players:list, ...modeInfo});
     if (room.isPublic) broadcastPublicRooms();
+    // Always-on lobby: auto-start when first human joins
+    if (room.isAlwaysOpen && !room.gameStarted) {
+      setTimeout(() => launchAlwaysOnGame(room), 1500);
+    }
   });
 
   // Join a running public game mid-match
@@ -2094,4 +2270,7 @@ io.on('connection', socket => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => console.log(`\n  ★  Pixel Duel  →  http://localhost:${PORT}\n`));
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n  ★  Pixel Duel  →  http://localhost:${PORT}\n`);
+  createAlwaysOnLobby();
+});

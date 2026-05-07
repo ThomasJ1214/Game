@@ -59,6 +59,7 @@ let cameraX       = 0;
 let cameraY       = 0;
 let mapAsteroids    = [];
 let killFeed        = [];
+let announcements   = [];   // { msg, col, at, dur }
 let _difficulty     = 'medium';
 let _upgradeOpen    = false;
 let _selectedTarget = -1;
@@ -153,6 +154,13 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty, opts) {
     prevState   = serverState;
     serverState = gameState;
     checkTransitions();
+  });
+
+  announcements = [];
+  _socket.off('game_announce');
+  _socket.on('game_announce', ({ msg, col, dur }) => {
+    announcements.push({ msg, col: col || '#ffffff', at: Date.now(), dur: dur || 4000 });
+    if (announcements.length > 5) announcements.shift();
   });
 
   _socket.off('kill_event');
@@ -357,6 +365,7 @@ function initGame(sock, initialState, yourIndex, asteroids, difficulty, opts) {
 function stopGame() {
   generation++;
   killFeed = [];
+  announcements = [];
   keys.w = keys.a = keys.s = keys.d = keys.space = keys.shift = false;
   window.onkeydown = null;
   window.onkeyup   = null;
@@ -1556,7 +1565,7 @@ function drawHUD(state, now) {
     // Round timer (only when there's a time limit)
     if (_roundDuration > 0 && _roundStartAt > 0 && !_roundEndShown) {
       const elapsed   = Date.now() - _roundStartAt;
-      const remaining = Math.max(0, _roundDuration * 1000 - elapsed);
+      const remaining = Math.max(0, _roundDuration - elapsed);
       const mins      = Math.floor(remaining / 60000);
       const secs      = Math.floor((remaining % 60000) / 1000);
       const timeStr   = `${mins}:${secs.toString().padStart(2, '0')}`;
@@ -1633,6 +1642,7 @@ function drawHUD(state, now) {
 
   // Kill feed — bottom left
   drawKillFeed();
+  drawAnnouncements();
 
   // Leaderboard — top right
   drawLeaderboard(state);
@@ -1989,6 +1999,30 @@ function drawMinimap(state) {
   ctx.restore();
 }
 
+function drawAnnouncements() {
+  const now = Date.now();
+  announcements = announcements.filter(a => now - a.at < a.dur);
+  if (!announcements.length) return;
+  ctx.save();
+  ctx.textAlign = 'center';
+  const cx = ARENA_W / 2;
+  let y = ARENA_H / 2 - 60;
+  for (let i = 0; i < announcements.length; i++) {
+    const a = announcements[i];
+    const age = now - a.at;
+    const fade = age < 400 ? age / 400 : age > a.dur - 600 ? (a.dur - age) / 600 : 1;
+    ctx.globalAlpha = Math.max(0, Math.min(1, fade));
+    ctx.font        = 'bold 15px monospace';
+    ctx.fillStyle   = a.col;
+    ctx.shadowColor = a.col;
+    ctx.shadowBlur  = 12;
+    ctx.fillText(a.msg, cx, y + i * 22);
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 0;
+  ctx.restore();
+}
+
 function drawKillFeed() {
   const now = Date.now();
   killFeed = killFeed.filter(k => now - k.at < 5000);
@@ -2021,26 +2055,99 @@ function drawKillFeed() {
 }
 
 function drawLeaderboard(state) {
-  const sorted = [...state.ships].sort((a, b) => b.kills - a.kills);
   const x = ARENA_W - 14;
   let y = 26;
-
-  ctx.font      = 'bold 12px monospace';
-  ctx.fillStyle = '#3a3a6a';
+  ctx.textAlign  = 'right';
   ctx.shadowBlur = 0;
-  ctx.textAlign = 'right';
-  ctx.fillText('KILLS', x, y);
-  y += 16;
 
-  for (const ship of sorted) {
-    const col  = COLORS[ship.index % COLORS.length];
-    const isMe = ship.index === _myIndex;
-    ctx.font        = isMe ? 'bold 12px monospace' : '11px monospace';
-    ctx.fillStyle   = ship.isBot ? '#3a3a5a' : col;
-    ctx.shadowColor = col;
-    ctx.shadowBlur  = isMe ? 5 : 0;
-    ctx.fillText(`${ship.kills}  ${ship.name}${isMe ? ' ◄' : ''}`, x, y);
-    y += 15;
+  const TEAM_COLS = ['#00eeff', '#ff44aa'];
+
+  if (_gameMode === 'tdm' || _gameMode === 'ctf') {
+    // Team scores side-by-side at top
+    const t0kills = state.ships.filter(s => s.team === 0).reduce((a, s) => a + s.kills, 0);
+    const t1kills = state.ships.filter(s => s.team === 1).reduce((a, s) => a + s.kills, 0);
+    if (_gameMode === 'ctf' && state.ctfScore) {
+      ctx.font = 'bold 13px monospace';
+      ctx.fillStyle = TEAM_COLS[0]; ctx.shadowColor = TEAM_COLS[0]; ctx.shadowBlur = 5;
+      ctx.fillText(`🚩 ${state.ctfScore[0]}`, x - 56, y);
+      ctx.fillStyle = '#aaaacc'; ctx.shadowBlur = 0;
+      ctx.fillText('vs', x - 30, y);
+      ctx.fillStyle = TEAM_COLS[1]; ctx.shadowColor = TEAM_COLS[1]; ctx.shadowBlur = 5;
+      ctx.fillText(`${state.ctfScore[1]} 🚩`, x, y);
+      ctx.shadowBlur = 0;
+      y += 18;
+    }
+    ctx.font = 'bold 11px monospace';
+    ctx.fillStyle = TEAM_COLS[0]; ctx.shadowColor = TEAM_COLS[0]; ctx.shadowBlur = 4;
+    ctx.fillText(`Cyan  ${t0kills}K`, x, y);
+    ctx.shadowBlur = 0;
+    y += 14;
+    ctx.fillStyle = TEAM_COLS[1]; ctx.shadowColor = TEAM_COLS[1]; ctx.shadowBlur = 4;
+    ctx.fillText(`Magenta  ${t1kills}K`, x, y);
+    ctx.shadowBlur = 0;
+    y += 14;
+    // Divider
+    ctx.fillStyle = '#2a2a4a'; ctx.fillText('──────────', x, y); y += 14;
+    // Individual players
+    const sorted = [...state.ships].filter(s => !s.isBot).sort((a, b) => b.kills - a.kills);
+    for (const ship of sorted) {
+      const col  = ship.team !== undefined ? TEAM_COLS[ship.team % 2] : COLORS[ship.index % COLORS.length];
+      const isMe = ship.index === _myIndex;
+      ctx.font        = isMe ? 'bold 11px monospace' : '10px monospace';
+      ctx.fillStyle   = col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur  = isMe ? 5 : 0;
+      ctx.fillText(`${ship.kills}  ${ship.name}${isMe ? ' ◄' : ''}`, x, y);
+      y += 14;
+    }
+  } else if (_gameMode === 'br') {
+    ctx.font = 'bold 12px monospace'; ctx.fillStyle = '#3a3a6a'; ctx.fillText('ALIVE', x, y); y += 16;
+    const sorted = [...state.ships].sort((a, b) => (b.alive ? 1 : 0) - (a.alive ? 1 : 0) || b.kills - a.kills);
+    for (const ship of sorted) {
+      const col  = ship.alive ? COLORS[ship.index % COLORS.length] : '#2a2a4a';
+      const isMe = ship.index === _myIndex;
+      const icon = ship.alive ? '▶' : '☠';
+      ctx.font        = isMe ? 'bold 11px monospace' : '10px monospace';
+      ctx.fillStyle   = ship.isBot ? (ship.alive ? '#3a3a5a' : '#1a1a2a') : col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur  = isMe && ship.alive ? 5 : 0;
+      ctx.fillText(`${icon} ${ship.name}${isMe ? ' ◄' : ''}`, x, y);
+      y += 14;
+    }
+  } else if (_gameMode === 'koth') {
+    ctx.font = 'bold 12px monospace'; ctx.fillStyle = '#ffff44'; ctx.shadowColor = '#ffff44'; ctx.shadowBlur = 4;
+    ctx.fillText('⭐ HILL TIME', x, y); ctx.shadowBlur = 0; y += 16;
+    const zone = state.kothZone;
+    const scores = (zone && zone.scores) || {};
+    const sorted = [...state.ships].filter(s => !s.isBot).sort((a, b) => {
+      const ka = scores[`p${a.index}`] || scores[`t${a.team}`] || 0;
+      const kb = scores[`p${b.index}`] || scores[`t${b.team}`] || 0;
+      return kb - ka;
+    });
+    for (const ship of sorted) {
+      const col  = COLORS[ship.index % COLORS.length];
+      const isMe = ship.index === _myIndex;
+      const pts  = scores[`p${ship.index}`] || scores[`t${ship.team}`] || 0;
+      ctx.font        = isMe ? 'bold 11px monospace' : '10px monospace';
+      ctx.fillStyle   = col; ctx.shadowColor = col; ctx.shadowBlur = isMe ? 5 : 0;
+      ctx.fillText(`${pts}s  ${ship.name}${isMe ? ' ◄' : ''}`, x, y);
+      y += 14;
+    }
+    ctx.shadowBlur = 0;
+  } else {
+    // FFA — kill leaderboard
+    ctx.font = 'bold 12px monospace'; ctx.fillStyle = '#3a3a6a'; ctx.fillText('KILLS', x, y); y += 16;
+    const sorted = [...state.ships].sort((a, b) => b.kills - a.kills);
+    for (const ship of sorted) {
+      const col  = COLORS[ship.index % COLORS.length];
+      const isMe = ship.index === _myIndex;
+      ctx.font        = isMe ? 'bold 12px monospace' : '11px monospace';
+      ctx.fillStyle   = ship.isBot ? '#3a3a5a' : col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur  = isMe ? 5 : 0;
+      ctx.fillText(`${ship.kills}  ${ship.name}${isMe ? ' ◄' : ''}`, x, y);
+      y += 15;
+    }
   }
   ctx.shadowBlur = 0;
 }
