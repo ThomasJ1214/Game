@@ -1577,7 +1577,8 @@ function endRound(room, state, now, reason, forcedWinner) {
     room.gameState    = null;
     room._roundEnded  = false;
     const list = room.players.map(p => ({ name:p.name, index:p.index }));
-    io.to(room.roomCode).emit('return_to_lobby', { players: list, nextMap });
+    io.to(room.roomCode).emit('return_to_lobby', { players: list, nextMap,
+      gameMode: room.gameMode, mapName: MAPS[room.mapIndex % MAPS.length].name });
     if (room.isPublic) {
       const pubList = Object.values(rooms).filter(r=>r.isPublic).map(r=>({
         code:r.roomCode, playerCount:r.players.length,
@@ -1703,7 +1704,8 @@ function cleanup(socket) {
       return;
     }
     const list = room.players.map(p=>({name:p.name, index:p.index}));
-    io.to(code).emit('lobby_update', {players:list});
+    io.to(code).emit('lobby_update', { players:list,
+      gameMode: room.gameMode, mapName: MAPS[room.mapIndex % MAPS.length].name });
   }
 }
 
@@ -1750,7 +1752,8 @@ io.on('connection', socket => {
     };
     socketRoom[socket.id] = code;
     socket.join(code);
-    socket.emit('lobby_created', { roomCode:code, playerIndex:0, players:[{name:pName,index:0}] });
+    socket.emit('lobby_created', { roomCode:code, playerIndex:0, players:[{name:pName,index:0}],
+      gameMode: room.gameMode, mapName: MAPS[room.mapIndex % MAPS.length].name });
     if (isPublic) broadcastPublicRooms();
   });
 
@@ -1766,8 +1769,9 @@ io.on('connection', socket => {
     socketRoom[socket.id] = code;
     socket.join(code);
     const list = room.players.map(p=>({name:p.name,index:p.index}));
-    socket.emit('lobby_joined', {roomCode:code, playerIndex:idx, players:list});
-    io.to(code).emit('lobby_update', {players:list});
+    const modeInfo = { gameMode: room.gameMode, mapName: MAPS[room.mapIndex % MAPS.length].name };
+    socket.emit('lobby_joined', {roomCode:code, playerIndex:idx, players:list, ...modeInfo});
+    io.to(code).emit('lobby_update', {players:list, ...modeInfo});
     if (room.isPublic) broadcastPublicRooms();
   });
 
@@ -1804,6 +1808,19 @@ io.on('connection', socket => {
       asteroids:   room.asteroids,
     });
     broadcastPublicRooms();
+  });
+
+  // Host updates mode/duration selection while in lobby — broadcast to all players
+  socket.on('update_lobby_settings', ({ gameMode, roundDuration }) => {
+    const code = socketRoom[socket.id];
+    const room = code && rooms[code];
+    if (!room || room.gameStarted) return;
+    if (room.players[0].id !== socket.id) return;   // host only
+    if (gameMode && ['ffa','tdm','br','koth','ctf'].includes(gameMode)) room.gameMode = gameMode;
+    if (roundDuration !== undefined) room.roundDuration = Number(roundDuration) * 1000;
+    io.to(code).emit('lobby_settings', {
+      gameMode: room.gameMode, mapName: MAPS[room.mapIndex % MAPS.length].name,
+    });
   });
 
   socket.on('start_game', ({ difficulty, gameMode, roundDuration } = {}) => {

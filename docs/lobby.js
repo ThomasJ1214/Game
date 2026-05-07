@@ -114,6 +114,7 @@ modeBtns.forEach(btn => {
     selectedMode = btn.dataset.mode;
     modeBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    if (socket && socket.connected) socket.emit('update_lobby_settings', { gameMode: selectedMode });
   });
 });
 durBtns.forEach(btn => {
@@ -322,6 +323,16 @@ function doJoin() {
 // LOBBY HELPERS
 // ─────────────────────────────────────────────────────────────
 
+function showLobbyModeInfo(gameMode, mapName) {
+  if (lobbyModeInfo) {
+    lobbyModeInfo.textContent = gameMode ? MODE_LABELS[gameMode] || gameMode.toUpperCase() : '';
+    lobbyModeInfo.classList.toggle('hidden', !gameMode);
+  }
+  if (lobbyMapName) {
+    lobbyMapName.textContent = mapName ? `Map: ${mapName}` : '';
+  }
+}
+
 function renderPlayerList(players) {
   playerListEl.innerHTML = '';
   // Show all joined players + one empty waiting slot (if room not full)
@@ -394,7 +405,7 @@ btnLobbyBack.addEventListener('click', () => {
 
 function setupSocketHandlers() {
 
-  socket.on('lobby_created', ({ roomCode, playerIndex, players }) => {
+  socket.on('lobby_created', ({ roomCode, playerIndex, players, gameMode, mapName }) => {
     clearTimeout(responseTimer);
     setLoading(btnDoCreate, false, 'Create →');
     myPlayerIndex = playerIndex;
@@ -404,8 +415,9 @@ function setupSocketHandlers() {
     lobbyHeading.textContent = 'Your game room';
     codeBlock.classList.remove('hidden');
     roomCodeEl.textContent = roomCode;
-    difficultyBlock.classList.remove('hidden');   // host can pick difficulty
+    difficultyBlock.classList.remove('hidden');
     modeBlock.classList.remove('hidden');
+    if (lobbyMapName) lobbyMapName.textContent = mapName ? `Map: ${mapName}` : '';
 
     // Generate and display share link
     const shareUrl = new URL(location.href);
@@ -423,7 +435,7 @@ function setupSocketHandlers() {
     showScreen('lobby');
   });
 
-  socket.on('lobby_joined', ({ roomCode, playerIndex, players }) => {
+  socket.on('lobby_joined', ({ roomCode, playerIndex, players, gameMode, mapName }) => {
     clearTimeout(responseTimer);
     setLoading(btnJoin, false, 'Join →');
     myPlayerIndex = playerIndex;
@@ -432,8 +444,9 @@ function setupSocketHandlers() {
 
     lobbyHeading.textContent = `Room ${roomCode}`;
     codeBlock.classList.add('hidden');
-    difficultyBlock.classList.add('hidden');      // guests don't pick difficulty
+    difficultyBlock.classList.add('hidden');
     modeBlock.classList.add('hidden');
+    showLobbyModeInfo(gameMode, mapName);
 
     renderPlayerList(players);
     updateStartButton(players);
@@ -451,9 +464,14 @@ function setupSocketHandlers() {
     renderPublicGames(list);
   });
 
-  socket.on('lobby_update', ({ players }) => {
+  socket.on('lobby_update', ({ players, gameMode, mapName }) => {
     renderPlayerList(players);
     updateStartButton(players);
+    if (!isHost) showLobbyModeInfo(gameMode, mapName);
+  });
+
+  socket.on('lobby_settings', ({ gameMode, mapName }) => {
+    if (!isHost) showLobbyModeInfo(gameMode, mapName);
   });
 
   socket.on('game_start', ({ gameState, yourIndex, asteroids, difficulty, gameMode, mapName, mapTheme, roundDuration, roundStartAt }) => {
@@ -462,10 +480,11 @@ function setupSocketHandlers() {
     initGame(socket, gameState, yourIndex, asteroids, difficulty, { gameMode, mapName, mapTheme, roundDuration, roundStartAt });
   });
 
-  socket.on('return_to_lobby', ({ players, nextMap }) => {
+  socket.on('return_to_lobby', ({ players, nextMap, gameMode, mapName }) => {
     if (typeof stopGame === 'function') stopGame();
     renderPlayerList(players);
     updateStartButton(players);
+    if (!isHost) showLobbyModeInfo(gameMode, mapName);
     if (lobbyMapName) lobbyMapName.textContent = nextMap ? `Next map: ${nextMap}` : '';
     showScreen('lobby');
   });

@@ -1546,29 +1546,40 @@ function drawHUD(state, now) {
     }
   }
 
-  // Round timer + mode label — top centre
-  if (_roundDuration > 0 && _roundStartAt > 0 && !_roundEndShown) {
-    const elapsed   = Date.now() - _roundStartAt;
-    const remaining = Math.max(0, _roundDuration * 1000 - elapsed);
-    const mins      = Math.floor(remaining / 60000);
-    const secs      = Math.floor((remaining % 60000) / 1000);
-    const timeStr   = `${mins}:${secs.toString().padStart(2, '0')}`;
-    const urgent    = remaining < 30000 && remaining > 0;
-    const pulse     = urgent ? (0.7 + 0.3 * Math.sin(Date.now() * 0.01)) : 1;
+  // Mode + map label — always visible top centre
+  {
+    const modeLabelMap = { ffa: '⚔ FFA', tdm: '🛡 TDM', br: '🌀 BATTLE ROYALE', koth: '⭐ KING OF THE HILL', ctf: '🚩 CTF' };
+    const modeStr = modeLabelMap[_gameMode] || _gameMode.toUpperCase();
     ctx.save();
-    ctx.globalAlpha = pulse;
-    ctx.textAlign   = 'center';
-    ctx.font        = 'bold 20px monospace';
-    ctx.fillStyle   = urgent ? '#ff4444' : '#ffffff';
-    ctx.shadowColor = urgent ? '#ff2222' : '#aaaaff';
-    ctx.shadowBlur  = urgent ? 16 : 7;
-    ctx.fillText(timeStr, ARENA_W / 2, 32);
-    ctx.globalAlpha = 1;
+    ctx.textAlign = 'center';
+
+    // Round timer (only when there's a time limit)
+    if (_roundDuration > 0 && _roundStartAt > 0 && !_roundEndShown) {
+      const elapsed   = Date.now() - _roundStartAt;
+      const remaining = Math.max(0, _roundDuration * 1000 - elapsed);
+      const mins      = Math.floor(remaining / 60000);
+      const secs      = Math.floor((remaining % 60000) / 1000);
+      const timeStr   = `${mins}:${secs.toString().padStart(2, '0')}`;
+      const urgent    = remaining < 30000 && remaining > 0;
+      const pulse     = urgent ? (0.7 + 0.3 * Math.sin(Date.now() * 0.01)) : 1;
+      ctx.globalAlpha = pulse;
+      ctx.font        = 'bold 20px monospace';
+      ctx.fillStyle   = urgent ? '#ff4444' : '#ffffff';
+      ctx.shadowColor = urgent ? '#ff2222' : '#aaaaff';
+      ctx.shadowBlur  = urgent ? 16 : 7;
+      ctx.fillText(timeStr, ARENA_W / 2, 28);
+      ctx.globalAlpha = 1;
+      ctx.shadowBlur  = 0;
+    }
+
+    // Mode + map — always shown, below timer if present
+    const labelY = (_roundDuration > 0 && _roundStartAt > 0 && !_roundEndShown) ? 44 : 22;
+    ctx.font      = 'bold 12px monospace';
+    ctx.fillStyle = '#aaaacc';
+    ctx.shadowColor = '#000000';
+    ctx.shadowBlur  = 6;
+    ctx.fillText(`${modeStr}  ·  ${_mapName}`, ARENA_W / 2, labelY);
     ctx.shadowBlur  = 0;
-    ctx.font        = '10px monospace';
-    ctx.fillStyle   = '#555577';
-    const modeLabelMap = { ffa: 'FFA', tdm: 'TDM', br: 'BATTLE ROYALE', koth: 'KING OF THE HILL', ctf: 'CTF' };
-    ctx.fillText(`${modeLabelMap[_gameMode] || _gameMode.toUpperCase()}  ·  ${_mapName}`, ARENA_W / 2, 46);
     ctx.restore();
   }
 
