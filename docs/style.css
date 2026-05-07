@@ -501,3 +501,79 @@ kbd {
   cursor: pointer;
 }
 .public-game-join:hover { background: rgba(0,255,255,.2); }
+
+/* ═══════════════════════════════════════════
+   GAME MODE + DURATION SELECTOR (lobby)
+═══════════════════════════════════════════ */
+.mode-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  width: 100%;
+  max-width: 360px;
+}
+.mode-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+.mode-btn, .dur-btn {
+  padding: 5px 12px;
+  font-family: inherit;
+  font-size: .72rem;
+  letter-spacing: .06em;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  outline: none;
+  border-radius: 3px;
+  transition: all .15s;
+}
+.mode-btn:hover, .dur-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+.mode-btn.active, .dur-btn.active {
+  background: rgba(0,255,255,.12);
+  border-color: var(--cyan);
+  color: var(--cyan);
+  box-shadow: 0 0 8px rgba(0,255,255,.25);
+}
+
+/* ═══════════════════════════════════════════
+   ROUND END OVERLAY
+═══════════════════════════════════════════ */
+#round-end-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4,4,20,.88);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  z-index: 200;
+}
+#round-end-overlay.visible { display: flex; }
+.re-title {
+  font-size: clamp(1.4rem,5vw,2.4rem);
+  letter-spacing: .12em;
+  color: var(--cyan);
+  text-shadow: 0 0 22px var(--cyan);
+}
+.re-winner {
+  font-size: clamp(1rem,3vw,1.6rem);
+  letter-spacing: .08em;
+  color: var(--yellow);
+  text-shadow: 0 0 14px var(--yellow);
+}
+.re-table {
+  border-collapse: collapse;
+  font-size: .82rem;
+  min-width: 260px;
+}
+.re-table th { color: var(--muted); font-weight: normal; padding: 4px 14px; letter-spacing:.08em; }
+.re-table td { padding: 5px 14px; text-align: center; border-top: 1px solid var(--border); }
+.re-table tr:first-child td { color: var(--yellow); }
+.re-next { font-size: .72rem; color: var(--muted); letter-spacing: .06em; }
