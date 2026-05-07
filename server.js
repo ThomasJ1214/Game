@@ -10,6 +10,301 @@ const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, { cors: { origin: '*', methods: ['GET','POST'] } });
 app.use(express.static(path.join(__dirname, 'docs')));
+app.use(express.json());
+
+// ─── ADMIN ────────────────────────────────────────────────────────────────────
+const ADMIN_USER     = process.env.ADMIN_USER || 'admin';
+const ADMIN_PASS     = process.env.ADMIN_PASS || 'pixelduel_admin';
+const MAP_ROTATE_MS  = 20 * 60 * 1000;   // 20 minutes
+const MODE_ROTATE_MS = 10 * 60 * 1000;   // 10 minutes
+const GAME_MODES     = ['ffa', 'tdm', 'br', 'koth', 'ctf'];
+const { randomBytes } = require('crypto');
+
+const adminTokens = new Map();   // token → expiresAt (ms)
+
+let globalMapIndex  = 0;
+let globalGameMode  = 'ffa';
+let mapRotateNext   = Date.now() + MAP_ROTATE_MS;
+let modeRotateNext  = Date.now() + MODE_ROTATE_MS;
+
+// Auto-rotate map every 20 min
+setInterval(() => {
+  globalMapIndex = (globalMapIndex + 1) % MAPS.length;
+  mapRotateNext  = Date.now() + MAP_ROTATE_MS;
+  console.log(`[auto-rotate] Map  → ${MAPS[globalMapIndex].name}`);
+}, MAP_ROTATE_MS);
+
+// Auto-rotate game mode every 10 min
+setInterval(() => {
+  globalGameMode = GAME_MODES[(GAME_MODES.indexOf(globalGameMode) + 1) % GAME_MODES.length];
+  modeRotateNext = Date.now() + MODE_ROTATE_MS;
+  console.log(`[auto-rotate] Mode → ${globalGameMode}`);
+}, MODE_ROTATE_MS);
+
+function requireAdmin(req, res, next) {
+  const header = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
+  const exp    = adminTokens.get(header);
+  if (!exp || Date.now() > exp) return res.status(401).json({ error: 'Unauthorized' });
+  next();
+}
+
+const ADMIN_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pixel Duel · Admin</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{background:#07071a;color:#ccd;font:14px/1.5 'Courier New',monospace;min-height:100vh;
+       display:flex;flex-direction:column;align-items:center;padding:32px 16px}
+  h1{color:#00ffff;text-shadow:0 0 18px #00ffff;font-size:1.4rem;margin-bottom:24px;letter-spacing:.08em}
+  h2{color:#556688;font-size:.78rem;letter-spacing:.08em;margin:0 0 12px;text-transform:uppercase}
+  .card{background:rgba(0,0,40,.7);border:1px solid rgba(0,200,255,.18);border-radius:8px;
+        padding:22px;width:100%;max-width:660px;margin-bottom:14px}
+  label{display:block;font-size:.72rem;color:#6688aa;margin-bottom:4px}
+  input[type=text],input[type=password],select{width:100%;background:#0c0c28;
+    border:1px solid rgba(0,180,255,.3);border-radius:4px;color:#ccd;font:inherit;
+    padding:8px 10px;margin-bottom:12px;outline:none}
+  input:focus,select:focus{border-color:#00ffff}
+  button{background:transparent;border:1px solid #00ffff;border-radius:4px;color:#00ffff;
+         cursor:pointer;font:inherit;padding:7px 18px;text-shadow:0 0 8px #00ffff;
+         transition:background .15s;white-space:nowrap}
+  button:hover{background:rgba(0,255,255,.08)}
+  button.mag{border-color:#ff44aa;color:#ff44aa;text-shadow:0 0 8px #ff44aa}
+  .err{color:#ff4444;font-size:.8rem;margin-top:6px}
+  .ok{color:#44ff88;font-size:.8rem;margin-top:6px;display:none}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .row{display:flex;gap:10px;align-items:flex-end}
+  .row > *{flex:1}.row > button{flex:0 0 auto}
+  table{width:100%;border-collapse:collapse;font-size:.8rem}
+  th{color:#446688;padding:4px 8px;text-align:left;border-bottom:1px solid rgba(0,150,200,.2)}
+  td{padding:5px 8px;border-bottom:1px solid rgba(0,100,150,.1)}
+  .badge{display:inline-block;font-size:.7rem;padding:1px 6px;border-radius:3px;
+         background:rgba(0,200,100,.1);border:1px solid rgba(0,200,100,.3);color:#44ff88}
+  .badge.idle{background:rgba(80,80,160,.15);border-color:rgba(80,80,160,.3);color:#6688aa}
+  .cd{font-size:.78rem;color:#ffcc44;margin-top:6px}
+  #logout{position:fixed;top:14px;right:16px;font-size:.72rem}
+  .hint{font-size:.72rem;color:#446688;margin-bottom:14px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<div id="login-screen">
+  <h1>◈ PIXEL DUEL ADMIN ◈</h1>
+  <div class="card">
+    <label>Username</label>
+    <input id="inp-user" type="text" autocomplete="username" placeholder="admin">
+    <label>Password</label>
+    <input id="inp-pass" type="password" autocomplete="current-password" placeholder="••••••••">
+    <button onclick="doLogin()">Login →</button>
+    <p class="err" id="login-err"></p>
+  </div>
+</div>
+
+<div id="admin-screen" style="display:none;width:100%;max-width:660px">
+  <h1>◈ PIXEL DUEL ADMIN ◈</h1>
+  <button id="logout" class="mag" onclick="logout()">⎋ Logout</button>
+
+  <div class="card">
+    <h2>Global Defaults</h2>
+    <p class="hint">New rooms inherit these settings. Auto-rotation timer resets when you apply a manual change.</p>
+    <div class="grid2">
+      <div>
+        <label>Game Mode</label>
+        <select id="sel-mode"></select>
+        <div class="row"><button onclick="applyMode()">Apply Mode</button></div>
+        <div class="cd" id="mode-cd"></div>
+      </div>
+      <div>
+        <label>Map</label>
+        <select id="sel-map"></select>
+        <div class="row"><button onclick="applyMap()">Apply Map</button></div>
+        <div class="cd" id="map-cd"></div>
+      </div>
+    </div>
+    <p class="ok" id="settings-ok">✓ Settings applied.</p>
+  </div>
+
+  <div class="card">
+    <h2>Active Rooms <span id="room-count" style="color:#446688"></span></h2>
+    <table>
+      <thead><tr><th>Code</th><th>Mode</th><th>Map</th><th>Players</th><th>Status</th></tr></thead>
+      <tbody id="rooms-body"><tr><td colspan="5" style="color:#446688">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let token = localStorage.getItem('pd_admin_token');
+let status = null;
+let cdTick  = null;
+
+const MODE_LABELS = {ffa:'FFA — Free For All',tdm:'TDM — Team Deathmatch',
+  br:'Battle Royale',koth:'King of the Hill',ctf:'CTF — Capture the Flag'};
+
+window.onload = () => { if (token) loadStatus(); };
+
+document.getElementById('inp-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+async function doLogin() {
+  const user = document.getElementById('inp-user').value.trim();
+  const pass = document.getElementById('inp-pass').value;
+  const err  = document.getElementById('login-err');
+  err.textContent = '';
+  try {
+    const r = await fetch('/admin/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ user, pass }),
+    });
+    if (!r.ok) { err.textContent = 'Invalid credentials.'; return; }
+    const { token: t } = await r.json();
+    token = t;
+    localStorage.setItem('pd_admin_token', token);
+    loadStatus();
+  } catch { err.textContent = 'Connection error.'; }
+}
+
+function logout() {
+  localStorage.removeItem('pd_admin_token');
+  token = null;
+  clearInterval(cdTick);
+  document.getElementById('admin-screen').style.display = 'none';
+  document.getElementById('login-screen').style.display = '';
+}
+
+async function loadStatus() {
+  try {
+    const r = await fetch('/admin/api/status', { headers: { Authorization: 'Bearer ' + token } });
+    if (r.status === 401) { logout(); return; }
+    status = await r.json();
+    renderPanel();
+  } catch (e) { console.error(e); }
+}
+
+function renderPanel() {
+  document.getElementById('login-screen').style.display  = 'none';
+  document.getElementById('admin-screen').style.display  = '';
+
+  // Mode select
+  const sm = document.getElementById('sel-mode');
+  sm.innerHTML = '';
+  for (const m of status.gameModes) {
+    const o = Object.assign(document.createElement('option'), { value: m, textContent: MODE_LABELS[m] || m });
+    if (m === status.globalGameMode) o.selected = true;
+    sm.appendChild(o);
+  }
+
+  // Map select
+  const sp = document.getElementById('sel-map');
+  sp.innerHTML = '';
+  for (const m of status.maps) {
+    const o = Object.assign(document.createElement('option'), { value: m.i, textContent: (m.i+1) + '. ' + m.name });
+    if (m.i === status.globalMapIndex) o.selected = true;
+    sp.appendChild(o);
+  }
+
+  // Rooms
+  const tbody = document.getElementById('rooms-body');
+  document.getElementById('room-count').textContent = '(' + status.rooms.length + ')';
+  if (!status.rooms.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:#446688">No active rooms</td></tr>';
+  } else {
+    tbody.innerHTML = status.rooms.map(r =>
+      '<tr><td style="color:#00ffff;letter-spacing:.07em">' + r.code + '</td>' +
+      '<td>' + (r.gameMode || '—').toUpperCase() + '</td>' +
+      '<td>' + (r.mapName || '—') + '</td>' +
+      '<td>' + r.players + '</td>' +
+      '<td><span class="badge' + (r.inProgress ? '' : ' idle') + '">' +
+        (r.inProgress ? '▶ IN GAME' : 'LOBBY') + '</span></td></tr>'
+    ).join('');
+  }
+
+  clearInterval(cdTick);
+  cdTick = setInterval(tickCountdowns, 1000);
+  tickCountdowns();
+}
+
+function tickCountdowns() {
+  if (!status) return;
+  document.getElementById('mode-cd').textContent = '↻ auto-rotate in ' + fmt(status.modeRotateNext - Date.now());
+  document.getElementById('map-cd').textContent  = '↻ auto-rotate in ' + fmt(status.mapRotateNext  - Date.now());
+}
+
+function fmt(ms) {
+  if (ms <= 0) return '0:00';
+  const m = Math.floor(ms / 60000), s = Math.floor((ms % 60000) / 1000);
+  return m + ':' + String(s).padStart(2, '0');
+}
+
+async function applyMode() { await postSettings({ gameMode: document.getElementById('sel-mode').value }); }
+async function applyMap()  { await postSettings({ mapIndex: Number(document.getElementById('sel-map').value) }); }
+
+async function postSettings(body) {
+  const ok = document.getElementById('settings-ok');
+  try {
+    const r = await fetch('/admin/api/settings', {
+      method:'POST',
+      headers:{'Content-Type':'application/json', Authorization:'Bearer ' + token},
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401) { logout(); return; }
+    const data = await r.json();
+    status.globalGameMode  = data.globalGameMode;
+    status.globalMapIndex  = data.globalMapIndex;
+    status.modeRotateNext  = data.modeRotateNext;
+    status.mapRotateNext   = data.mapRotateNext;
+    ok.style.display = '';
+    setTimeout(() => { ok.style.display = 'none'; }, 2500);
+    await loadStatus();
+  } catch (e) { console.error(e); }
+}
+</script>
+</body>
+</html>`;
+
+app.get('/admin', (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.send(ADMIN_HTML); });
+
+app.post('/admin/login', (req, res) => {
+  const { user, pass } = req.body || {};
+  if (user !== ADMIN_USER || pass !== ADMIN_PASS)
+    return res.status(401).json({ error: 'Invalid credentials' });
+  const tok = randomBytes(24).toString('hex');
+  adminTokens.set(tok, Date.now() + 24 * 3600 * 1000);   // 24-hour token
+  res.json({ token: tok });
+});
+
+app.get('/admin/api/status', requireAdmin, (_req, res) => {
+  res.json({
+    globalMapIndex, globalGameMode,
+    maps:      MAPS.map((m, i) => ({ i, name: m.name })),
+    gameModes: GAME_MODES,
+    mapRotateNext, modeRotateNext,
+    rooms: Object.values(rooms).map(r => ({
+      code:       r.roomCode,
+      players:    r.players.length,
+      gameMode:   r.gameMode,
+      mapName:    MAPS[r.mapIndex % MAPS.length].name,
+      inProgress: r.gameStarted,
+      isPublic:   r.isPublic,
+    })),
+  });
+});
+
+app.post('/admin/api/settings', requireAdmin, (req, res) => {
+  const { mapIndex, gameMode } = req.body || {};
+  if (mapIndex !== undefined) {
+    const idx = Number(mapIndex);
+    if (Number.isInteger(idx) && idx >= 0 && idx < MAPS.length) {
+      globalMapIndex = idx;
+      mapRotateNext  = Date.now() + MAP_ROTATE_MS;
+    }
+  }
+  if (gameMode !== undefined && GAME_MODES.includes(gameMode)) {
+    globalGameMode = gameMode;
+    modeRotateNext = Date.now() + MODE_ROTATE_MS;
+  }
+  res.json({ ok: true, globalMapIndex, globalGameMode, mapRotateNext, modeRotateNext });
+});
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const WORLD_W        = 9600;
@@ -1442,8 +1737,8 @@ io.on('connection', socket => {
       gameStarted: false, gameState:null, gameLoopInterval:null,
       shutdownTimer: null,
       inputs: Array.from({length:MAX_PLAYERS}, emptyInput),
-      mapIndex: 0, asteroids: generateAsteroids(0),
-      gameMode: 'ffa', roundDuration: ROUND_DURATION_MS,
+      mapIndex: globalMapIndex, asteroids: generateAsteroids(globalMapIndex),
+      gameMode: globalGameMode, roundDuration: ROUND_DURATION_MS,
       _roundEnded: false,
     };
     socketRoom[socket.id] = code;
