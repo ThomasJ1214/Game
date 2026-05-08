@@ -1,14 +1,18 @@
 // ─────────────────────────────────────────────────────────────
 // BACKEND URL CONFIGURATION
 //
-// After deploying server.js to Railway / Render / Fly.io,
-// paste your backend URL below and push to GitHub.
-//
-// Example:
-//   window.BACKEND_URL = 'https://pixel-duel-production.up.railway.app';
-//
-// Leave as empty string ('') for local development
-// (falls back to same-origin automatically).
+// For local development, it falls back to same-origin.
+// For production, the URL is determined based on the environment.
 // ─────────────────────────────────────────────────────────────
 
-window.BACKEND_URL = 'https://game-production-fa7b.up.railway.app';
+(function() {
+  const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+  if (isLocal) {
+    window.BACKEND_URL = ''; // Falls back to same-origin
+  } else {
+    // REPLACE THIS with your actual Fly.io backend URL after deployment
+    // Example: 'https://pixel-duel.fly.dev'
+    window.BACKEND_URL = 'https://pixel-duel.fly.dev';
+  }
+})();

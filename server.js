@@ -2,13 +2,20 @@
 require('./docs/upgrades.js');   // sets global.UPGRADE_TREE, computeShipStats, etc.
 
 const express        = require('express');
+const compression    = require('compression');
 const http           = require('http');
 const { Server }     = require('socket.io');
 const path           = require('path');
 
 const app    = express();
+app.use(compression());
 const server = http.createServer(app);
-const io     = new Server(server, { cors: { origin: '*', methods: ['GET','POST'] } });
+const io     = new Server(server, {
+  cors: { origin: '*', methods: ['GET','POST'] },
+  pingInterval: 10000,
+  pingTimeout: 5000,
+  transports: ['websocket', 'polling']
+});
 app.use(express.static(path.join(__dirname, 'docs')));
 app.use(express.json());
 
